@@ -519,6 +519,69 @@ def check_join(record_id, group_id, gateway, *, recovering=False,
         return activation
 
 
+def entitlement_context(db, record):
+    """Keep a confirmed join pending without owning the group's write lock."""
+    group = db.get(ManagedGroup, record.group_id) if record.group_id else None
+    activation = member_activation(db, record.id)
+    grant = db.get(NativeGroupGrant, activation.grant_id) if activation else None
+    account = db.get(AwsAccount, record.aws_account_id)
+    current_grant = live_grant(db, group.id) if group else None
+    if (
+        not group or not activation or not grant or not account
+        or not current_grant or current_grant.id != grant.id
+        or record.step != "group_entitlement_pending" or not record.provision_only
+        or not record.sso_user_id or record.sso_deleted_at or not record.group_membership_id
+        or record.active_operation_id or activation.operation_id != record.id
+        or activation.counted or activation.state not in ("pending", "needs_review")
+        or activation.owner_id != record.owner_id or grant.group_id != group.id
+        or record.owner_id != group.owner_id or grant.owner_id != group.owner_id
+        or record.aws_account_id != group.aws_account_id or grant.aws_account_id != group.aws_account_id
+        or group.deleted_at or group.state != "ready" or not group.remote_id
+        or grant.state != "active" or (grant.stop_at and grant.stop_at <= now())
+        or activation.plan_id != grant.plan_id or activation.subscription_type != grant.subscription_type
+        or activation.config_hash != config_hash(db, account)
+        or record.worker_config_hash != activation.config_hash
+    ):
+        raise AwsFailure("已确认加组的身份、原授权或冻结配置已变化，请核对原请求",
+                         uncertain=True, code="group_entitlement_scope_changed")
+    if group.active_job_id:
+        # A sibling may own only its serialized membership write. Its actual
+        # membership can precede saving the ID, so reads must not compare a full
+        # group snapshot or clear that sibling's intent.
+        sibling = db.get(Subscription, group.active_job_id)
+        sibling_activation = member_activation(db, sibling.id) if sibling else None
+        if (not sibling or sibling.id == record.id or sibling.group_id != group.id
+                or sibling.owner_id != group.owner_id or sibling.aws_account_id != group.aws_account_id
+                or sibling.state not in ("queued", "running", "needs_review")
+                or sibling.step not in ("subscribe", "group_membership", "group_membership_pending")
+                or not sibling_activation or sibling_activation.counted
+                or sibling_activation.operation_id != sibling.id
+                or sibling_activation.grant_id != grant.id):
+            raise AwsFailure("分组存在其他变更，停止成员授权核对",
+                             uncertain=True, code="group_entitlement_scope_changed")
+    return group, grant, activation
+
+
+def check_entitlement(record_id, gateway):
+    """Read only the exact confirmed membership, original claim and aggregate."""
+    from .database import SessionLocal
+    from .subscription_sources import observe_subscription
+
+    with SessionLocal() as db:
+        record = db.get(Subscription, record_id)
+        group, grant, _ = entitlement_context(db, record)
+        db.expunge_all()
+    with assignment_read_scope(gateway):
+        info = gateway.group_subscription_info(group)
+        membership = gateway.get_group_membership(group.remote_id, record.sso_user_id)
+        if (info.get("status") != "active" or info.get("subscription_type") != grant.subscription_type
+                or info.get("pending_type") or membership != record.group_membership_id):
+            raise AwsFailure("已确认加组的 AWS 成员身份或原 GROUP 授权已变化，请核对",
+                             uncertain=True, code="group_entitlement_drift")
+        verify_member_sources(gateway, record, group, grant.subscription_type)
+        return observe_subscription(gateway, record)
+
+
 def checkpoint_join(db, record_id, *, mark_intent=True, creation_reset=False,
                     preparing_credentials=False):
     record = db.get(Subscription, record_id)

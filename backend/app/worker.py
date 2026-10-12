@@ -40,7 +40,8 @@ from .automatic_retries import (
 from .retry_policy import classify_failure
 
 logger = logging.getLogger("kiro.worker")
-PENDING_STEPS = ("create_user_pending", "password_pending", "subscribe_pending", "group_membership_pending")
+PENDING_STEPS = ("create_user_pending", "password_pending", "subscribe_pending", "group_membership_pending",
+                 "group_entitlement_pending")
 CREDENTIAL_STEPS = ("create_user", "create_user_pending", "password", "password_pending")
 
 
@@ -53,7 +54,7 @@ def eligible_records(*, account_id=None, record_id=None):
         eligible,
         or_(
             Subscription.group_id.is_(None),
-            Subscription.step == "subscribe_pending",
+            Subscription.step.in_(("subscribe_pending", "group_entitlement_pending")),
             Subscription.group_id.in_(
                 select(ManagedGroup.id).where(ManagedGroup.state == "ready")
             ),
@@ -62,6 +63,7 @@ def eligible_records(*, account_id=None, record_id=None):
     eligible = and_(eligible, or_(
         Subscription.group_id.is_(None),
         Subscription.step.in_(CREDENTIAL_STEPS),
+        Subscription.step == "group_entitlement_pending",
         ~Subscription.group_id.in_(select(NativeGroupGrant.group_id).where(
             NativeGroupGrant.state.in_(("active", "cancel_scheduled", "needs_review", "pending")))),
         select(ManagedGroup.id).where(
@@ -110,7 +112,7 @@ def claim(*, account_id=None, record_id=None):
         if changed.rowcount:
             record = db.get(Subscription, record_id)
             from .group_subscription_state import member_activation
-            if (record.group_id and record.step not in CREDENTIAL_STEPS
+            if (record.group_id and record.step not in (*CREDENTIAL_STEPS, "group_entitlement_pending")
                     and member_activation(db, record.id)):
                 group_lock = db.execute(update(ManagedGroup).where(
                     ManagedGroup.id == record.group_id,
@@ -295,6 +297,9 @@ def fail(record_id, token, message, uncertain=False, *, error=None, frozen_confi
 def finish_sso(record_id, token, observation=None):
     with SessionLocal() as db:
         r = load(db, record_id, token)
+        if r.step == "group_entitlement_pending":
+            from .group_subscription_state import entitlement_context
+            entitlement_context(db, r)
         settle_retry(db, "sso", record_id)
         changed = db.execute(
             update(Subscription)
@@ -366,6 +371,34 @@ def membership_lock(record_id, token, frozen_config):
         return True
 
 
+def await_group_entitlement(record_id, token, membership_id, frozen_config):
+    """Atomically checkpoint a proved membership and release only its write lock."""
+    from .group_subscription_state import entitlement_context, join_context
+
+    with SessionLocal() as db:
+        changed = db.execute(update(Subscription).where(
+            Subscription.id == record_id, Subscription.state == "running", Subscription.lease_token == token,
+        ).values(updated_at=now(), lease_until=now() + timedelta(seconds=settings.worker_lease_seconds)))
+        if not changed.rowcount:
+            raise RuntimeError("任务租约已失效")
+        record = load(db, record_id, token)
+        group = db.get(ManagedGroup, record.group_id)
+        check_config(db, db.get(AwsAccount, record.aws_account_id), frozen_config)
+        join_context(db, record, group, recovering=True)
+        if not membership_id:
+            raise RuntimeError("缺少已确认的 AWS 成员身份")
+        released = db.execute(update(ManagedGroup).where(
+            ManagedGroup.id == group.id, ManagedGroup.active_job_id == record.id,
+        ).values(active_job_id=None))
+        if not released.rowcount:
+            raise RuntimeError("成员写入锁已变化")
+        record.group_membership_id = membership_id
+        record.step, record.worker_config_hash = "group_entitlement_pending", frozen_config
+        entitlement_context(db, record)
+        sync_numbered_items(db, record)
+        db.commit()
+
+
 def _run_one(gateway_factory, account_id, record_id):
     job = claim(account_id=account_id, record_id=record_id)
     if not job:
@@ -433,6 +466,10 @@ def _run_one(gateway_factory, account_id, record_id):
                                         preparing_credentials=current.step in CREDENTIAL_STEPS)
 
             gateway.before_provisioning_write = before_write
+            if step == "group_entitlement_pending":
+                from .group_subscription_state import check_entitlement
+                finish_sso(record_id, token, check_entitlement(record_id, gateway))
+                return True
             if step == "password_pending":
                 raise AwsFailure("一次性密码结果不明，原明文无法恢复；请使用“重置一次性密码”确认生成新密码后继续", uncertain=True)
             if step == "create_user_pending":
@@ -460,7 +497,8 @@ def _run_one(gateway_factory, account_id, record_id):
                         token,
                         "尚未在 AWS 查到对应订阅；保留处理中次数，请稍后再次核对",
                         uncertain=True,
-                        error=AwsFailure("订阅只读核对尚未确认", uncertain=True),
+                        error=AwsFailure("订阅只读核对尚未确认", uncertain=True,
+                                         code="subscription_assignment_propagating", retryable=True),
                         frozen_config=frozen_config,
                     )
                 return True
@@ -556,9 +594,11 @@ def _run_one(gateway_factory, account_id, record_id):
                         raise AwsFailure("AWS 分组成员尚未确认", uncertain=True)
                 check_join(r.id, group.id, gateway, recovering=True)
                 if native_join:
-                    # Keep the persisted send intent until quota settlement;
-                    # a crash here must resume with read-only reconciliation.
-                    save(record_id, token, group_membership_id=membership_id)
+                    # Membership and its exact GROUP claim are proved above.
+                    # Aggregate propagation retains the record intent/quota,
+                    # while a sibling can now acquire the group write lock.
+                    await_group_entitlement(record_id, token, membership_id, frozen_config)
+                    step = "group_entitlement_pending"
                 else:
                     step = "subscribe"
                     save(record_id, token, group_membership_id=membership_id, step=step)
@@ -566,8 +606,8 @@ def _run_one(gateway_factory, account_id, record_id):
             if r.provision_only:
                 observation = None
                 if native_join:
-                    from .subscription_sources import observe_subscription
-                    observation = observe_subscription(gateway, r)
+                    from .group_subscription_state import check_entitlement
+                    observation = check_entitlement(record_id, gateway)
                 finish_sso(record_id, token, observation)
                 return True
             # Persist the intent BEFORE the non-idempotent external write.

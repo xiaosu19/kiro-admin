@@ -63,6 +63,8 @@ def resume_stopped(db, row):
         record = db.get(Subscription, item.record_id)
         if not record:
             continue
+        if record.step == 'group_entitlement_pending':
+            raise HTTPException(409, '成员已确认加组但授权仍待核对，请仅核对原请求')
         if record.state != 'failed' or record.active_operation_id or record.sso_deleted_at:
             raise HTTPException(409, '成员仍在处理、待核对或已删除，不能直接恢复')
         try:

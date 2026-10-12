@@ -162,7 +162,9 @@ def test_unknown_result_reconciles_without_reopening_or_double_count(alice, admi
     assert Gateway.calls == 1
     assert count() == (0, 1, 0, 1)
     Gateway.mode = "reconciled"
-    alice.post(f"/api/subscriptions/{r['id']}/retry")
+    assert alice.post(f"/api/subscriptions/{r['id']}/retry").status_code == 409
+    from test_automatic_retries import due
+    due("sso", r["id"])
     run_one(Gateway)
     assert Gateway.calls == 1
     assert count() == (1, 0, 1, 1)

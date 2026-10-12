@@ -303,9 +303,9 @@ def test_successful_join_keeps_intent_and_quota_until_readonly_recovery(
         record = db.get(Subscription, rid)
         activation = db.scalar(select(GroupMemberActivation).where(GroupMemberActivation.record_id == rid))
         assert record.state == "needs_review"
-        assert record.step == "group_membership_pending"
+        assert record.step == ("group_membership_pending" if failure == "drift" else "group_entitlement_pending")
         assert activation.reserved and not activation.counted
-        assert db.get(ManagedGroup, "group-1").active_job_id == rid
+        assert db.get(ManagedGroup, "group-1").active_job_id == (rid if failure == "drift" else None)
     assert counter() == (1, 1, 1)
     native.members.pop(("remote-group-1", "unmanaged"), None)
     monkeypatch.setattr(worker, "finish_sso", original_finish)

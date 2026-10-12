@@ -14,7 +14,9 @@ def queue_retry(db, r, user):
         raise HTTPException(409, "SSO 已删除或有其他操作正在处理")
     a = db.get(AwsAccount, r.aws_account_id)
     owner = db.get(User, r.owner_id)
-    if r.step not in ("create_user_pending", "password_pending", "subscribe_pending") and not (r.step == "group_membership_pending" and r.provision_only) and (
+    if r.step not in ("create_user_pending", "password_pending", "subscribe_pending") and not (
+        r.step in ("group_membership_pending", "group_entitlement_pending") and r.provision_only
+    ) and (
         not owner.active
         or owner.deleted_at
         or not a.active
@@ -53,9 +55,15 @@ def queue_retry(db, r, user):
     if not changed.rowcount:
         raise HTTPException(409, "任务已在处理")
     if r.group_id:
-        from .group_subscription_state import join_context, live_grant, member_activation, reserve_join
+        from .group_subscription_state import entitlement_context, join_context, live_grant, member_activation, reserve_join
         group = db.get(ManagedGroup, r.group_id)
         grant = live_grant(db, group.id)
+        if retry_step == "group_entitlement_pending":
+            try:
+                entitlement_context(db, r)
+            except aws.AwsFailure as exc:
+                raise HTTPException(409, str(exc)) from None
+            return
         if grant and not member_activation(db, r.id):
             reserve_join(db, group, r, user, r.id)
         if group.active_job_id not in (None, r.id):
