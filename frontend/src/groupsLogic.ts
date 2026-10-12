@@ -15,6 +15,8 @@ export function groupMemberStatus(record: RecordItem) {
     return record.state === "failed" ? "SSO 创建失败，尚未确认用户" : "SSO 尚未创建";
   }
   if (record.group_membership_id) {
+    if (record.step === "group_entitlement_pending")
+      return record.state === "needs_review" ? "已确认加组，订阅同步待核对" : "已确认加组，等待订阅同步";
     if (record.state === "needs_review" && record.step === "group_membership_pending")
       return "已记录加组，授权待核对";
     return record.operation_pending || record.operation ? "已确认加组 · 有任务待处理" : "已确认加入 AWS 分组";
