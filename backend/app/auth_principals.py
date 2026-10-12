@@ -11,9 +11,10 @@ from .auth_credentials import (
     invalidate_credentials,
 )
 from .external_auth_models import ExternalExportItem
-from .models import AwsAccount, Binding, ManagedGroup, Subscription
+from .models import AwsAccount, Binding, ManagedGroup, Subscription, now
 from .proxies import ProxyUnavailable, proxy_selection
 from .security import decrypt, encrypt
+from .subscription_eligibility import SUBSCRIPTION_REQUIRED, has_confirmed_subscription_access
 
 
 def login_key(directory, username):
@@ -58,6 +59,8 @@ def managed_configuration(db, pasted, actor):
         raise HTTPException(409, "同一登录身份对应多个管理记录，请先核对 AWS 配置")
     record, account = matches[0]
     _access(db, actor, record, account)
+    if not has_confirmed_subscription_access(record, now()):
+        raise HTTPException(409, SUBSCRIPTION_REQUIRED)
     _ready(db, record)
     for supplied, actual in ((pasted.region, account.region),
                              (pasted.instance_arn, account.instance_arn),
@@ -81,7 +84,7 @@ def managed_configuration(db, pasted, actor):
     return configuration
 
 
-def validate_managed(db, item, actor, *, check_revision=True, check_operations=True):
+def validate_managed(db, item, actor, *, check_revision=True, check_operations=True, check_subscription=True):
     configuration = json.loads(item.configuration)
     record_id = configuration.get("_managed_record_id")
     if not record_id:
@@ -94,6 +97,8 @@ def validate_managed(db, item, actor, *, check_revision=True, check_operations=T
             or record.sso_deleted_at):
         raise HTTPException(409, "管理记录身份已变化，本次认证已失效")
     _access(db, actor, record, account)
+    if check_subscription and not has_confirmed_subscription_access(record, now()):
+        raise HTTPException(409, SUBSCRIPTION_REQUIRED)
     if (account_fingerprint(account) != configuration["_managed_account_fingerprint"]
             or check_revision and record.credential_revision != configuration["_managed_credential_revision"]):
         raise HTTPException(409, "AWS 配置或登录凭据已变化，本次认证已失效")

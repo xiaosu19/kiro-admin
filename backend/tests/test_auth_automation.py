@@ -92,6 +92,9 @@ def test_provider_failures_never_submit_a_guess():
     assert progress.status == "challenge" and not adapter.answers
     assert len(vision.calls) == 3
     assert "captcha_verified" not in [event.event for event in adapter.events]
+    automatic = decrypt(progress.sealed_state)["captcha_automation"]
+    assert automatic["reason"] == "captcha_attempt_limit"
+    assert automatic["last_failure_code"] == "captcha_provider_failed"
 
 
 def test_expired_overall_budget_does_not_repeat_provider_after_restart():
@@ -102,6 +105,43 @@ def test_expired_overall_budget_does_not_repeat_provider_after_restart():
     progress = replace(progress, sealed_state=encrypt(state))
     result = solve(adapter, progress, vision)
     assert result.status == "challenge" and not vision.calls and not adapter.answers
+    assert decrypt(result.sealed_state)["captcha_automation"]["reason"] == "captcha_timeout"
+
+
+def test_missing_personal_provider_has_safe_configuration_reason(monkeypatch):
+    from app.auth_automation import automate_challenge
+    monkeypatch.setattr("app.ai_settings.provider_for_actor", lambda actor: None)
+    adapter = CaptchaLogin()
+    progress = automate_challenge(adapter, adapter.start(), actor_id=2)
+    automatic = decrypt(progress.sealed_state).get("captcha_automation", {})
+    assert automatic.get("reason") == "captcha_unavailable"
+    assert automatic["attempts"] == automatic["submissions"] == 0
+    assert not adapter.answers
+
+
+def test_rejected_native_answers_keep_safe_rejection_code_at_limit():
+    adapter = CaptchaLogin(accepts=False)
+    progress = solve(adapter, adapter.start(), Vision())
+    automatic = decrypt(progress.sealed_state)["captcha_automation"]
+    assert automatic["reason"] == "captcha_attempt_limit"
+    assert automatic["last_failure_code"] == "captcha_answer_rejected"
+    assert automatic["attempts"] == automatic["submissions"] == 3
+
+
+def test_ams_limit_preserves_safe_provider_reason_without_raw_exception():
+    from app.captcha_browser import BrowserChallengeError
+    adapter = CaptchaLogin()
+    def browser(challenge, gateway, provider, *, deadline, before_recognition):
+        for _ in range(3):
+            before_recognition()
+        error = BrowserChallengeError("captcha_attempt_limit")
+        error.last_failure_code = "captcha_provider_failed"
+        raise error
+    progress = solve(adapter, adapter.start(ams=True), Vision(), browser_solver=browser)
+    automatic = decrypt(progress.sealed_state)["captcha_automation"]
+    assert automatic["reason"] == "captcha_attempt_limit"
+    assert automatic["last_failure_code"] == "captcha_provider_failed"
+    assert automatic["attempts"] == 3 and automatic["submissions"] == 0
 
 
 def test_ams_requires_actual_official_completion_and_native_acceptance():

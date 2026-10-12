@@ -46,7 +46,7 @@ def test_subscribe_after_lost_password_response_preserves_recovery(
         raise AuthError("transport_failed", uncertain=True)
 
     monkeypatch.setattr(PasswordAuth, "after_pending", staticmethod(lost))
-    r = record()
+    r = record(subscription_status="not_subscribed")
     response = admission(
         alice, [r], "custom_password", password="PossiblyAccepted9!"
     )
@@ -233,7 +233,7 @@ def test_creation_retry_after_auth_change_preserves_unknown_credential(
 
 @pytest.mark.parametrize("invalid_field", ["sso_user_id", "sso_deleted_at"])
 def test_subscription_only_cannot_recreate_missing_or_deleted_sso(alice, invalid_field):
-    r = record()
+    r = record(subscription_status="not_subscribed")
     assert subscribe(alice, [r.id]).status_code == 202
     before = credential_snapshot(r.id)
     with SessionLocal() as db:

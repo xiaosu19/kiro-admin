@@ -98,7 +98,8 @@ def result_for(item, *, expires=None):
             'userId': 'actual-user', 'username': item.username, 'password': 'Permanent9!',
             'identityStoreId': 'd-1234567890', 'profile': {
                 'arn': 'arn:aws:codewhisperer:us-east-1:123456789012:profile/real', 'profileName': 'Real'},
-            'usage': {'userInfo': {'userId': 'd-1234567890.actual-user', 'email': 'real@example.test'}}}
+            'usage': {'userInfo': {'userId': 'd-1234567890.actual-user', 'email': 'real@example.test'},
+                      'subscriptionInfo': {'type': 'Q_DEVELOPER_STANDALONE_PRO'}}}
 
 
 def completed(batch, index=0, **changes):

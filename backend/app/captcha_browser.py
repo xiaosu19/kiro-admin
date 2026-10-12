@@ -1,7 +1,8 @@
 """An ephemeral, credential-free browser for the validated official AMS widget.
 
 Chromium has a dead proxy. Every HTTP request is explicitly fulfilled through
-the account's authenticated SOCKS5h transport; no browser route is continued.
+the account's authenticated SOCKS5h transport, or public pinned HTTPS for an
+unmanaged external login; no browser route is continued.
 Only a character image crop reaches OCR, and only the SDK callback can succeed.
 """
 
@@ -24,6 +25,8 @@ import httpx
 from .auth_widget import public_challenge
 from .identity_login import AuthError
 from .vision_captcha import VisionError
+from .captcha_errors import safe_captcha_code
+from .vision_transport import PublicEndpointTransport
 
 
 MAX_RESPONSE = 8 * 1024 * 1024
@@ -53,8 +56,9 @@ for _name in ("httpx", "httpcore.connection", "httpcore.proxy", "httpcore.socks"
 
 
 class BrowserChallengeError(Exception):
-    def __init__(self, code):
+    def __init__(self, code, *, last_failure_code=None):
         self.code = code if isinstance(code, str) and code in SAFE_CODES else "captcha_browser_failed"
+        self.last_failure_code = safe_captcha_code(last_failure_code) if last_failure_code else None
         super().__init__(self.code)
 
 
@@ -179,10 +183,17 @@ class _ProxyHTTP:
         self.image_digests = {}
         proxy = getattr(gateway, "proxy", None)
         self.proxy_url = getattr(proxy, "url", None)
+        self.direct = self.proxy_url is None and getattr(gateway, "captcha_direct_allowed", False) is True
         try:
-            target = urlsplit(self.proxy_url or "")
-            if target.scheme != "socks5h" or not target.hostname or not target.port:
-                raise ValueError()
+            if self.direct:
+                region = re.fullmatch(r'([a-z]{2}(?:-[a-z]+)+-\d)\.threat-mitigation\.aws\.amazon\.com', api_host or '')
+                expected_image = ('amcs-captcha-prod-' + region[1] + '.s3.dualstack.' + region[1] + '.amazonaws.com') if region else None
+                if not region or image_host != expected_image or self.hosts != {api_host, 'cdn.' + api_host, expected_image}:
+                    raise ValueError()
+            else:
+                target = urlsplit(self.proxy_url or "")
+                if target.scheme != "socks5h" or not target.hostname or not target.port:
+                    raise ValueError()
         except ValueError:
             raise BrowserChallengeError("captcha_unsafe_destination") from None
         self.client = None
@@ -195,12 +206,14 @@ class _ProxyHTTP:
                 for name in ("cookie", "authorization", "referer"):
                     request.headers.pop(name, None)
 
+        transport = {"transport": PublicEndpointTransport()} if self.direct else {}
         self.client = httpx.AsyncClient(
             proxy=self.proxy_url, verify=True, trust_env=False,
             follow_redirects=False, max_redirects=0,
             timeout=httpx.Timeout(min(10, _remaining(self.deadline))),
             limits=httpx.Limits(max_connections=6, max_keepalive_connections=3),
             event_hooks={"request": [image_credentials]},
+            **transport,
         )
         await self.client.__aenter__()
         return self
@@ -505,7 +518,8 @@ async def _drive(page, http, provider, before_recognition, deadline, failure):
                     await asyncio.sleep(min(0.1, _remaining(deadline)))
                     continue
                 if attempts >= 3:
-                    raise BrowserChallengeError("captcha_attempt_limit")
+                    raise BrowserChallengeError("captcha_attempt_limit",
+                        last_failure_code="captcha_answer_rejected" if submitted else None)
                 http.gateway._check_proxy()
                 _remaining(deadline)
                 before_recognition()
@@ -518,7 +532,7 @@ async def _drive(page, http, provider, before_recognition, deadline, failure):
                     http.gateway._check_proxy()
                     _remaining(deadline)
                     if attempts >= 3:
-                        raise BrowserChallengeError("captcha_attempt_limit") from None
+                        raise BrowserChallengeError("captcha_attempt_limit", last_failure_code=error.code) from None
                     # Retry within this live AMS session. Reopening the widget would
                     # consume its one-use redemption token again. Rescan before OCR.
                     await asyncio.sleep(min(0.1, _remaining(deadline)))

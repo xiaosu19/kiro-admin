@@ -800,6 +800,7 @@ export interface AuthItem extends RetryProgress {
   error_code: string | null;
   cancel_requested: boolean;
   credential_state: CredentialState;
+  has_password: boolean;
   requires_new_reset: boolean;
 }
 export interface AuthBatch {

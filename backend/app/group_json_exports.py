@@ -18,7 +18,7 @@ from .security import audit, get_user, lock_user_write
 
 router = APIRouter(prefix='/api/group-json-exports')
 GROUP_FIELDS = ('id', 'owner_id', 'aws_account_id', 'name', 'remote_id', 'aws_scope', 'revision', 'policy_revision', 'deleted_at')
-MEMBER_FIELDS = ('id', 'owner_id', 'aws_account_id', 'group_id', 'group_membership_id', 'username', 'email', 'sso_user_id', 'sso_deleted_at', 'state', 'step', 'reserved', 'credential_revision')
+MEMBER_FIELDS = ('id', 'owner_id', 'aws_account_id', 'group_id', 'group_membership_id', 'username', 'email', 'sso_user_id', 'sso_deleted_at', 'state', 'step', 'reserved', 'credential_revision', 'subscription_status', 'access_ends_at')
 
 
 def dumps(value):

@@ -22,8 +22,10 @@ from .config import settings
 from .database import get_db
 from .external_auth_models import ExternalExportBatch, ExternalExportItem
 from .external_export_input import InputError, parse_accounts
+from .identity_login import AuthError
 from .models import User, now
 from .security import audit, decrypt, encrypt, get_user, lock_user_write
+from .subscription_eligibility import has_observed_paid_entitlement
 
 router = APIRouter(prefix='/api/external-auth-batches')
 ACTIVE = ('queued', 'running', 'polling', 'challenge')
@@ -48,7 +50,8 @@ def parse(text):
 
 
 def digest(accounts):
-    rows = [a.public() | {'password': a.password.get_secret_value()} for a in accounts]
+    rows = [{k: v for k, v in a.public().items() if k != 'credential_state'} |
+            {'password': a.password.get_secret_value()} for a in accounts]
     return hmac.new(settings.secret_key.encode(), json.dumps(rows, ensure_ascii=False, sort_keys=True).encode(), hashlib.sha256).hexdigest()
 
 
@@ -242,6 +245,8 @@ def document(item, result, *, db=None, actor=None):
             or configuration.get('api_region') and result.get('apiRegion') != configuration['api_region']
             or not verified_external_identity(result.get('usage'), configuration['directory'], result.get('userId'))):
         raise ValueError('export identity mismatch')
+    if not configuration.get('_managed_record_id') and not has_observed_paid_entitlement(result.get('usage')):
+        raise AuthError('paid_entitlement_unconfirmed')
     return account_json(exported_record(item, result), result)
 
 
@@ -265,6 +270,9 @@ def download(batch_id: str, format: Literal['zip', 'json'] = 'zip', item_id: str
             if not isinstance(result.get('expiresAt'), (int, float)) or result['expiresAt'] <= time.time():
                 raise ValueError('export expired')
             documents.append((item, data))
+        except AuthError as error:
+            item.state, item.error_code, item.error = 'failed', error.code, str(error)
+            item.result_encrypted = None
         except (ValueError, TypeError, KeyError, HTTPException):
             item.state, item.error_code, item.error = 'needs_review', 'export_invalid', 'Token 已过期或导出身份核对未通过，请重新粘贴账号'
             item.result_encrypted = None
@@ -303,7 +311,7 @@ def download(batch_id: str, format: Literal['zip', 'json'] = 'zip', item_id: str
 def credentials(batch_id: str, item_id: str, actor: User = Depends(get_user), db: Session = Depends(get_db)):
     batch = batch_owned(db, batch_id, actor)
     item = item_owned(db, batch, item_id)
-    validate_managed(db, item, actor, check_revision=False, check_operations=False)
+    validate_managed(db, item, actor, check_revision=False, check_operations=False, check_subscription=False)
     if not item.credential_encrypted:
         raise HTTPException(404, '没有保存的凭据恢复信息')
     credential = decrypt(item.credential_encrypted)

@@ -30,12 +30,27 @@ test("group admission freezes only explicitly selected preview IDs", () => {
 
 test("hidden operations, ownership and unavailable credentials block selection", () => {
   const user = { id: 7, role: "member" };
-  const r = { owner_id: 7, sso_user_id: "sso", state: "completed", has_password: true, credential_state: "permanent" };
+  const r = { owner_id: 7, sso_user_id: "sso", state: "completed", subscription_status: "active", has_password: true, credential_state: "permanent" };
   assert.equal(canUseAuthRecord(r, user, "json_export"), true);
   for (const patch of [{ operation_pending: true, operation: null }, { owner_id: 8 }, { sso_deleted_at: "date" }, { state: "running" }])
     assert.equal(canUseAuthRecord({ ...r, ...patch }, user, "json_export"), false);
   assert.equal(canUseAuthRecord({ ...r, has_password: false, credential_state: "unknown" }, user, "json_export"), true, "server decides whether unknown credentials have recoverable candidate");
   assert.equal(canUseAuthRecord({ ...r, has_password: false, credential_state: "one_time" }, user, "json_export"), false);
+});
+
+test("JSON selection requires confirmed unexpired subscription while password maintenance remains available", () => {
+  const user = { id: 7, role: "member" };
+  const r = { owner_id: 7, sso_user_id: "sso", state: "completed", has_password: true };
+  for (const subscription_status of [undefined, "not_subscribed", "pending", "unknown", "cancelled", "expired"]) {
+    const row = { ...r, subscription_status, counted: true };
+    assert.equal(canUseAuthRecord(row, user, "json_export"), false, subscription_status);
+    assert.equal(canUseAuthRecord(row, user, "reset_password"), true);
+  }
+  for (const subscription_status of ["active", "cancel_scheduled"]) {
+    assert.equal(canUseAuthRecord({ ...r, subscription_status, access_ends_at: "2999-01-01T00:00:00" }, user, "json_export"), true);
+    assert.equal(canUseAuthRecord({ ...r, subscription_status, access_ends_at: "2000-01-01T00:00:00" }, user, "json_export"), false);
+  }
+  assert.equal(canUseAuthRecord({ ...r, subscription_status: "cancel_scheduled" }, user, "json_export"), false);
 });
 
 test("custom password validation matches printable AWS native policy and never adds passwords to other modes", () => {

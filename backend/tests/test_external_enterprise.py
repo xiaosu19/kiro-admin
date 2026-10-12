@@ -33,7 +33,8 @@ def test_discovers_real_identity_profile_and_usage_without_admin_metadata(monkey
     adapter, progress, script, clock = setup(monkeypatch, key_context[1])
     profile = {'arn': 'arn:aws:codewhisperer:us-east-1:123456789012:profile/actual',
                'profileName': 'Actual AWS profile', 'identityDetails': None}
-    usage = {'userInfo': {'userId': 'd-1234567890.actual-sso-id', 'email': 'actual@example.test'}}
+    usage = {'userInfo': {'userId': 'd-1234567890.actual-sso-id', 'email': 'actual@example.test'},
+             'subscriptionInfo': {'type': 'Q_DEVELOPER_STANDALONE_PRO'}}
     script.add('POST', 'https://management.us-east-1.kiro.dev/ListAvailableProfiles', {'profiles': [profile]})
     script.add('GET', 'https://management.us-east-1.kiro.dev/getUsageLimits', usage)
     progress = run_ready(adapter, progress)

@@ -72,6 +72,7 @@ MESSAGES = {
     "no_profile": "未找到配置的企业 Kiro profile，无法确认订阅可用",
     "pagination_limit": "Kiro profile 分页异常或超过安全上限",
     "token_invalid": "AWS OIDC 令牌响应或有效期无效",
+    "paid_entitlement_unconfirmed": "AWS 用量响应未确认受支持的付费订阅，无法导出 JSON；请先完成订阅并核对状态",
 }
 
 

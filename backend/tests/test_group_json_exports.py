@@ -4,6 +4,7 @@ import io
 import json
 import uuid
 import zipfile
+from datetime import timedelta
 
 import pytest
 from sqlalchemy import select
@@ -29,7 +30,7 @@ def seed_groups(count=1, quantity=2, *, owner=2):
                 record = Subscription(id=rid, owner_id=owner, aws_account_id=1,
                     group_id=group.id, group_membership_id='membership-' + rid,
                     request_key=rid, username=f'actual-{index}-{position}', email=f'user-{index}-{position}@example.com',
-                    state='completed', step='done', reserved=False, provision_only=True,
+                    state='completed', step='done', reserved=False, provision_only=True, subscription_status='active',
                     sso_user_id='sso-' + rid, portal_url='https://d-1234567890.awsapps.com/start',
                     password_encrypted=encrypt('FakeOTP9!'))
                 db.add(record)
@@ -47,6 +48,39 @@ def admit(client, value, *, key=None):
         'preview_id': value['id'], 'fingerprint': value['fingerprint'],
         'request_key': key or str(uuid.uuid4()), 'acknowledge_password_changes': True,
     })
+
+
+@pytest.mark.parametrize('field,value', [
+    ('subscription_status', 'cancelled'),
+    ('subscription_status', 'cancel_scheduled'),
+    ('access_ends_at', 'future'),
+])
+def test_preview_freezes_subscription_status_and_expiry(alice, field, value):
+    from app.models import now
+    groups, records = seed_groups(quantity=1)
+    saved = preview(alice, groups).json()
+    with SessionLocal() as db:
+        row = db.get(Subscription, records[0])
+        setattr(row, field, now() + timedelta(days=1) if value == 'future' else value)
+        if value == 'cancel_scheduled':
+            row.access_ends_at = now() + timedelta(days=1)
+        db.commit()
+    response = admit(alice, saved)
+    assert response.status_code == 409, response.text
+    with SessionLocal() as db:
+        assert not list(db.scalars(select(AuthJob)))
+        assert db.get(Subscription, records[0]).active_operation_id is None
+
+
+def test_group_preview_skips_unsubscribed_completed_sso(alice):
+    groups, records = seed_groups(quantity=1)
+    with SessionLocal() as db:
+        db.get(Subscription, records[0]).subscription_status = 'not_subscribed'
+        db.commit()
+    response = preview(alice, groups)
+    assert response.status_code == 200
+    assert response.json()['eligible_count'] == 0
+    assert '订阅' in response.json()['groups'][0]['members'][0]['skip_reason']
 
 
 def test_five_groups_of_one_hundred_admit_exactly_five_hundred_existing_auth_jobs(alice):

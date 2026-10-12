@@ -358,12 +358,15 @@ def browser_fixture(monkeypatch, chromium):
     monkeypatch.setattr(Browser, "new_context", context)
     monkeypatch.setattr(BrowserType, "launch", launch)
 
-    def install(mode="success", widget=None):
+    def install(mode="success", widget=None, *, expected_proxy=PROXY):
         widget = widget or Widget(mode)
 
         def client(*args, **kwargs):
             widget.options.append(kwargs.copy())
-            assert kwargs.pop("proxy") == PROXY
+            assert kwargs.pop("proxy") == expected_proxy
+            if expected_proxy is None:
+                from app.vision_transport import PublicEndpointTransport
+                assert isinstance(kwargs.pop("transport"), PublicEndpointTransport)
             assert kwargs.get("trust_env") is False
             assert kwargs.get("follow_redirects") is False
             assert kwargs.get("max_redirects") == 0
@@ -997,8 +1000,9 @@ def test_temporary_vision_errors_still_stop_at_three_actual_attempts(browser_fix
             raise VisionError("captcha_provider_failed")
 
     vision = FailingVision()
-    with pytest.raises(module.BrowserChallengeError, match="^captcha_attempt_limit$"):
+    with pytest.raises(module.BrowserChallengeError, match="^captcha_attempt_limit$") as caught:
         run(module, Gateway(), vision, lambda: attempts.append(1))
+    assert caught.value.last_failure_code == "captcha_provider_failed"
     assert len(vision.images) == len(attempts) == 3 and len(launches) == 1
     assert not any(r.url.path == "/verify" for r in widget.requests)
 
@@ -1226,6 +1230,22 @@ def test_proxy_cannot_be_missing_or_fall_back_to_direct():
     gateway.proxy = None
     with pytest.raises(module.BrowserChallengeError, match="^captcha_unsafe_destination$"):
         run(module, gateway, Vision(), lambda: None)
+
+
+def test_unmanaged_external_ams_uses_public_pinned_direct_https(browser_fixture):
+    from app.external_enterprise import ExternalGateway
+    from test_external_auth_batches import TEXT
+    from app.external_export_input import parse_accounts
+    module = browser_module()
+    install, _, launches = browser_fixture
+    widget = install(expected_proxy=None)
+    account = parse_accounts(TEXT)[0]
+    gateway = ExternalGateway(SimpleNamespace(id='external', portal_url=account.portal_url, region=account.region),
+                              account.public(), lambda: None)
+    vision, attempts = Vision(), []
+    assert run(module, gateway, vision, lambda: attempts.append(1)) == 'official-fixture-access-code'
+    assert len(vision.images) == len(attempts) == len(launches) == 1
+    assert widget.requests and all(request.url.host in {ROOT, CDN, IMAGE_HOST} for request in widget.requests)
 
 
 @pytest.mark.parametrize("untrusted", ["secret-url-and-body", None, {}, []])

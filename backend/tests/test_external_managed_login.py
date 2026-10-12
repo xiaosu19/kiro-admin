@@ -178,6 +178,42 @@ def test_managed_password_change_invalidates_old_tokens_and_download_keeps_recor
         assert current.credential_revision == 2 and current.credential_state == "permanent"
 
 
+def test_managed_password_confirmed_before_token_failure_is_used_on_next_pasted_login(alice):
+    row = managed_record()
+    batch = admit(alice).json()
+
+    class ConfirmedThenTokenFailed(ExternalEnterpriseAuth):
+        def _advance(self, state, answer):
+            state["credential"].update(candidate="SyntheticPermanent9!", status="unknown")
+            self._emit(state, "password_pending", credential=True)
+            state["credential"].update(current="SyntheticPermanent9!", status="confirmed")
+            self._emit(state, "password_confirmed", credential=True)
+            raise AuthError("oauth_failed")
+
+    assert run_one(auth_factory=ConfirmedThenTokenFailed)
+    assert run_one(auth_factory=ConfirmedThenTokenFailed)
+    with SessionLocal() as db:
+        current = db.get(Subscription, row.id)
+        assert current.credential_state == "permanent"
+        assert decrypt(current.password_encrypted) == "SyntheticPermanent9!"
+        assert current.credential_recovery_encrypted is None
+        item = db.get(ExternalExportItem, batch["items"][0]["id"])
+        assert item.state == "failed" and item.result_encrypted is None
+
+    # The original copied block still contains the obsolete password.
+    following = admit(alice).json()
+    supplied = []
+
+    class UsesConfirmedPassword(ExternalEnterpriseAuth):
+        def begin(self, username, password, **kwargs):
+            supplied.append(password)
+            return super().begin(username, password, **kwargs)
+
+    assert run_one(auth_factory=UsesConfirmedPassword)
+    assert supplied == ["SyntheticPermanent9!"]
+    assert alice.post(f"/api/external-auth-batches/{following['id']}/cancel").status_code == 200
+
+
 def test_managed_guard_rechecks_configuration_immediately_before_wire(alice):
     managed_record()
     batch = admit(alice).json()

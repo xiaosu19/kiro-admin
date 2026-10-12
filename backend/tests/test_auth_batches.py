@@ -18,6 +18,7 @@ from app.security import decrypt, encrypt
 
 def record(owner=2, username=None, **values):
     rid = str(uuid.uuid4())
+    values.setdefault("subscription_status", "active")
     with SessionLocal() as db:
         r = Subscription(
             id=rid,
@@ -645,14 +646,32 @@ def test_native_password_confirmation_survives_oauth_failure(alice):
 
     r = record()
     batch = admission(alice, [r]).json()
+    assert batch["items"][0]["credential_state"] == "one_time"
     drain(AcceptedThenOAuthFailed)
-    assert alice.get("/api/auth-batches/" + batch["id"]).json()["states"]["failed"] == 1
+    failed = alice.get("/api/auth-batches/" + batch["id"]).json()
+    assert failed["states"]["failed"] == 1
+    assert failed["items"][0]["credential_state"] == "permanent"
     assert (
         alice.post(f"/api/subscriptions/{r.id}/credentials").json()["password"]
         == "RealConfirmedPassword9!"
     )
     with SessionLocal() as db:
         assert db.get(Subscription, r.id).credential_recovery_encrypted is None
+
+    class UsesSavedPassword(DoneAuth):
+        def begin(self, username, password, **kwargs):
+            assert password == "RealConfirmedPassword9!"
+            assert not kwargs.get("target_password")
+            return super().begin(username, password, **kwargs)
+
+    following = admission(alice, [r]).json()
+    assert following["items"][0]["credential_state"] == "permanent"
+    drain(UsesSavedPassword)
+    download = alice.post(f"/api/auth-batches/{following['id']}/download")
+    assert download.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(download.content)) as archive:
+        exported = json.loads(archive.read(archive.namelist()[0]))
+    assert exported[0]["password"] == "RealConfirmedPassword9!"
 
 
 def test_active_batch_does_not_expire_early_success_then_short_window_purges(alice):

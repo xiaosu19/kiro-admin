@@ -85,6 +85,8 @@ test('the JSON page opens pasted single/batch accounts from its own source tab a
   assert.match(page, /粘贴账号转换/); assert.match(page, /粘贴单个或批量账号/);
   assert.match(page, /textarea/); assert.match(page, /解析并预览/);
   assert.match(page, /本人粘贴转换记录/); assert.doesNotMatch(page, /转换选中的 0 人/);
+  assert.match(page, /默认 AWS access portal URL/);
+  assert.match(page, /双栈 AWS access portal URL/);
 });
 
 test('pasted preview displays parsed identity and region with no credential columns', () => {

@@ -14,6 +14,7 @@ from pathlib import Path
 from .config import settings
 from .database import engine
 from .vision_captcha import VisionError
+from .captcha_errors import safe_captcha_code
 
 
 class ActionRequired(Exception):
@@ -49,7 +50,16 @@ def automate_challenge(adapter, progress, *, actor_id=None, provider=None, brows
         from .ai_settings import provider_for_actor
         provider = provider_for_actor(actor_id)
         if provider is None:
-            return progress
+            state = adapter._load(progress.sealed_state)
+            automation = state.setdefault("captcha_automation", {
+                "attempts": 0, "submissions": 0,
+                "deadline": min(state["expires_at"], adapter.clock() + settings.captcha_total_timeout_seconds),
+            })
+            if automation.get("status") == "requires_action":
+                return progress
+            automation.update(status="requires_action", reason="captcha_unavailable")
+            sealed = adapter._emit(state, "state")
+            return replace(progress, sealed_state=sealed, revision=state["revision"])
     with browser_slot() as acquired:
         if not acquired:
             # Keep the encrypted native challenge intact; the normal worker queue
@@ -88,10 +98,15 @@ def _solve(adapter, progress, provider, browser_solver):
         sealed = adapter._emit(state, event)
         progress = replace(progress, sealed_state=sealed, revision=state["revision"])
 
-    def pause(reason):
-        automation.update(status="requires_action", reason=reason)
+    def pause(reason, last_failure_code=None):
+        automation.update(status="requires_action", reason=safe_captcha_code(reason))
+        if last_failure_code:
+            automation["last_failure_code"] = safe_captcha_code(last_failure_code)
         publish()
         return progress
+
+    def limit_reason():
+        return "captcha_timeout" if remaining() <= 0 else "captcha_attempt_limit"
 
     def before_recognition():
         adapter._guard()
@@ -110,7 +125,7 @@ def _solve(adapter, progress, provider, browser_solver):
     # The time limit also bounds official SDK completions that need no OCR.
     for _ in range(settings.captcha_max_attempts + 1):
         if remaining() <= 0 or max(automation["attempts"], automation["submissions"]) >= settings.captcha_max_attempts:
-            return pause("captcha_limit")
+            return pause(limit_reason())
         adapter._guard()
         challenge = state.get("automation_challenge") if state["challenge"]["kind"] == "aws_authorization" else state["challenge"]
         if not challenge or challenge["kind"] not in {"image", "ams"}:
@@ -128,11 +143,11 @@ def _solve(adapter, progress, provider, browser_solver):
                     value = (browser_solver or solve_ams)(challenge, adapter.gateway, provider,
                         deadline=time.monotonic() + remaining(), before_recognition=before_recognition)
                 except BrowserChallengeError as error:
-                    return pause(error.code)
+                    return pause(error.code, getattr(error, "last_failure_code", None))
                 answer = {"access_code": value}
             adapter._guard()
             if remaining() <= 0:
-                return pause("captcha_limit")
+                return pause("captcha_timeout")
             automation["submissions"] += 1
             # Official SDKs may complete without an image. Bound those native
             # submissions too, including after a worker restart.
@@ -146,18 +161,19 @@ def _solve(adapter, progress, provider, browser_solver):
             if progress.status != "challenge":
                 # Native parsing also has to finish inside the same budget.
                 if time.monotonic() > end:
-                    automation.update(status="submitted", reason="captcha_limit")
+                    automation.update(status="submitted", reason="captcha_timeout")
                     publish()
                     return progress
                 automation.update(status="verified")
                 publish("captcha_verified")
                 return progress
+            automation["last_failure_code"] = "captcha_answer_rejected"
         except ActionRequired:
-            return pause("captcha_limit")
+            return pause(limit_reason())
         except VisionError as error:
             if error.code in {"captcha_unavailable", "captcha_invalid_configuration", "captcha_invalid_image"}:
                 return pause(error.code)
             # Recognition retries never resubmit a password or an unaccepted
             # captcha answer. Attempts were committed before calling the model.
-            automation["reason"] = error.code
-    return pause("captcha_limit")
+            automation["last_failure_code"] = safe_captcha_code(error.code)
+    return pause(limit_reason())

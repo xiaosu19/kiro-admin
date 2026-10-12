@@ -4,6 +4,7 @@ import io
 import json
 import re
 import shlex
+from typing import Literal
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel, Field, SecretStr, ValidationError
@@ -24,7 +25,50 @@ ALIASES = {
     'userId': 'expected_user_id', 'sso_user_id': 'expected_user_id',
 }
 FIELDS = {'portal_url', 'username', 'password', 'region', 'directory', 'instance_arn',
-          'api_region', 'profile_arn', 'email', 'expected_user_id'}
+          'api_region', 'profile_arn', 'email', 'expected_user_id', 'dual_portal_url', 'credential_state'}
+DUAL_HOST = re.compile(r'(ssoins-[a-zA-Z0-9]+)\.portal\.(' + REGION.pattern + r')\.app\.aws')
+
+
+def field_name(name):
+    name = name.strip()
+    if re.fullmatch(r'(?:默认|default)\s*AWS\s*access\s*portal\s*URL(?:\s*[（(](?:仅限\s*IPv4|IPv4\s*only|IPv4)[）)])?', name, re.I):
+        return 'portal_url'
+    if re.fullmatch(r'(?:双栈|dual[ -]*stack)\s*AWS\s*access\s*portal\s*URL', name, re.I):
+        return 'dual_portal_url'
+    simple = re.sub(r'[\s_-]+', '', name).casefold()
+    common = {'username': 'username', 'password': 'password', 'onetimepassword': 'password',
+              'temporarypassword': 'password', 'permanentpassword': 'password',
+              'awsaccessportalurl': 'portal_url', 'region': 'region'}
+    return ALIASES.get(name, common.get(simple, name))
+
+
+def password_state(name):
+    simple = re.sub(r'[\s_-]+', '', name).casefold()
+    if simple in ('一次性密码', 'onetimepassword', 'temporarypassword'):
+        return 'one_time'
+    if simple in ('永久密码', 'permanentpassword'):
+        return 'permanent'
+    return None
+
+
+def checked_portal(value, *, dual=False):
+    url = value.strip()
+    if re.fullmatch(r'd-[a-f0-9]{10}', url):
+        url = 'https://' + url + '.awsapps.com/start'
+    p = urlsplit(url)
+    newer = DUAL_HOST.fullmatch(p.hostname or '')
+    if (p.scheme != 'https' or not p.hostname or p.port not in (None, 443)
+            or p.username is not None or p.password is not None or p.query or p.fragment
+            or p.path not in (('/start', '/start/', '', '/') if newer else ('/start', '/start/'))
+            or '\\' in url or any(c.isspace() or ord(c) < 32 for c in url)
+            or not re.fullmatch(r'(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:awsapps\.com|app\.aws)', p.hostname)
+            or dual and not newer):
+        raise ValueError()
+    directory = p.hostname.split('.')[0]
+    return ('https://' + p.hostname + '/start',
+            directory if re.fullmatch(r'd-[a-f0-9]{10}', directory) else None,
+            'arn:aws:sso:::instance/' + newer[1] if newer else None,
+            newer[2] if newer else None)
 
 
 class InputError(ValueError):
@@ -42,6 +86,7 @@ class PastedAccount(BaseModel):
     profile_arn: str | None = None
     email: str | None = None
     expected_user_id: str | None = None
+    credential_state: Literal['one_time', 'permanent', 'unknown'] = 'unknown'
 
     def public(self):
         return self.model_dump(exclude={'password'})
@@ -52,34 +97,42 @@ def checked_account(raw):
         raise InputError('每个账号须提供登录地址、用户名和密码')
     values = {}
     for name, value in raw.items():
-        key = ALIASES.get(name, name)
+        if not isinstance(name, str):
+            raise InputError('账号字段格式不完整')
+        key = field_name(name)
         if key not in FIELDS:
             continue
         if key in values and values[key] != value:
             raise InputError('账号包含互相冲突的字段')
         values[key] = value
+        state = password_state(name)
+        if state:
+            if values.get('credential_state', state) != state:
+                raise InputError('账号包含互相冲突的密码类型')
+            values['credential_state'] = state
     try:
+        dual_url = values.pop('dual_portal_url', None)
+        if dual_url and not values.get('portal_url'):
+            values['portal_url'] = dual_url
         account = PastedAccount(**values)
         password = account.password.get_secret_value()
         if not password or len(password) > 1024 or any(ord(c) < 32 for c in password):
             raise ValueError()
         if account.username != account.username.strip() or any(ord(c) < 32 or ord(c) == 127 for c in account.username):
             raise ValueError()
-        url = account.portal_url.strip()
-        if re.fullmatch(r'd-[a-f0-9]{10}', url):
-            url = 'https://' + url + '.awsapps.com/start'
-        p = urlsplit(url)
-        if (p.scheme != 'https' or not p.hostname or p.port not in (None, 443)
-                or p.username is not None or p.password is not None or p.query or p.fragment
-                or p.path not in ('/start', '/start/') or '\\' in url
-                or any(c.isspace() or ord(c) < 32 for c in url)
-                or not re.fullmatch(r'(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:awsapps\.com|app\.aws)', p.hostname)):
-            raise ValueError()
-        account.portal_url = 'https://' + p.hostname + '/start'
-        if not account.directory:
-            prefix = p.hostname.split('.')[0]
-            if re.fullmatch(r'd-[a-f0-9]{10}', prefix):
-                account.directory = prefix
+        portal, directory, instance, region = checked_portal(account.portal_url)
+        account.portal_url = portal
+        if dual_url:
+            _, _, dual_instance, dual_region = checked_portal(dual_url, dual=True)
+            if instance and (instance, region) != (dual_instance, dual_region):
+                raise InputError('账号包含互相冲突的登录入口')
+            instance, region = dual_instance, dual_region
+        for field, inferred in (('directory', directory), ('instance_arn', instance), ('region', region)):
+            supplied = getattr(account, field)
+            if supplied is not None and inferred is not None and supplied != inferred:
+                raise InputError('登录入口与账号字段互相冲突')
+            if supplied is None and inferred is not None:
+                setattr(account, field, inferred)
         if not account.directory or not re.fullmatch(r'[A-Za-z0-9-]{1,100}', account.directory):
             raise InputError('自定义登录入口需要在 JSON 中提供 identity_store_id')
         for value in (account.region, account.api_region):
@@ -98,14 +151,15 @@ def checked_account(raw):
         return account
     except InputError:
         raise
-    except (ValidationError, ValueError, TypeError):
+    except (ValidationError, ValueError, TypeError, AttributeError):
         raise InputError('账号字段不完整，或登录地址、区域、用户名格式不受支持') from None
 
 
 def text_rows(text):
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     # Our own copied login details and TXT export use labelled multiline blocks.
-    if any(re.match(r'(?:AWS\s*)?登录地址\s*[:：]', line) for line in lines):
+    labelled = [re.match(r'([^:：]+)[:：]\s*(.*)', line) for line in lines]
+    if any(m and field_name(m[1]) in ('portal_url', 'dual_portal_url') for m in labelled):
         rows, current = [], {}
         for line in lines:
             m = re.match(r'([^:：]+)[:：]\s*(.*)', line)
@@ -114,12 +168,19 @@ def text_rows(text):
                     continue
                 raise InputError('登录信息块包含无法识别的行')
             name, value = m.groups()
-            key = ALIASES.get(name.strip(), name.strip())
-            if key == 'portal_url' and 'portal_url' in current:
+            key = field_name(name)
+            if key in ('portal_url', 'dual_portal_url') and key in current and {'username', 'password'} <= current.keys():
                 rows.append(current)
                 current = {}
             if key in FIELDS:
+                if key in current and current[key] != value:
+                    raise InputError('登录信息块包含互相冲突的字段')
                 current[key] = value
+                state = password_state(name)
+                if state:
+                    if current.get('credential_state', state) != state:
+                        raise InputError('登录信息块包含互相冲突的密码类型')
+                    current['credential_state'] = state
         if current:
             rows.append(current)
         return rows

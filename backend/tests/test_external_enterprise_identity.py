@@ -33,7 +33,8 @@ def test_empty_us_profiles_fall_back_to_real_eu_profile_without_reauth(monkeypat
         "arn": "arn:aws:codewhisperer:eu-central-1:123456789012:profile/actual-eu",
         "profileName": "Actual EU AWS profile", "identityDetails": None,
     }
-    usage = {"userInfo": {"userId": "d-1234567890.actual-sso-id", "email": "actual@example.test"}}
+    usage = {"userInfo": {"userId": "d-1234567890.actual-sso-id", "email": "actual@example.test"},
+             "subscriptionInfo": {"type": "Q_DEVELOPER_STANDALONE_PRO"}}
     script.add("POST", "https://management.us-east-1.kiro.dev/ListAvailableProfiles", {"profiles": []})
     script.add("POST", "https://management.eu-central-1.kiro.dev/ListAvailableProfiles", {"profiles": [profile]})
     script.add("GET", "https://management.eu-central-1.kiro.dev/getUsageLimits", usage)
@@ -103,7 +104,8 @@ def test_known_user_manual_authorization_continues_existing_device_without_old_p
     profile = {"arn": "arn:aws:codewhisperer:us-east-1:123456789012:profile/actual", "profileName": "Actual"}
     script.add("POST", "https://management.us-east-1.kiro.dev/ListAvailableProfiles", {"profiles": [profile]})
     script.add("GET", "https://management.us-east-1.kiro.dev/getUsageLimits",
-               {"userInfo": {"userId": "d-1234567890.actual-sso-id"}})
+               {"userInfo": {"userId": "d-1234567890.actual-sso-id"},
+                "subscriptionInfo": {"type": "Q_DEVELOPER_STANDALONE_PRO"}})
     polling = adapter.advance(paused.sealed_state, answer=answer)
     assert polling.status == "polling" and len(script.calls) == before_login_calls
     checkpoint = [event for event in events if event.event == "external_authorization"]

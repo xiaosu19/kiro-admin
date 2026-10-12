@@ -32,6 +32,7 @@ from .models import (
     now,
 )
 from .security import audit, encrypt, get_user
+from .subscription_eligibility import SUBSCRIPTION_REQUIRED, has_confirmed_subscription_access
 
 router = APIRouter(prefix="/api/auth-batches")
 KINDS = Literal["json_export", "reset_password", "random_password", "custom_password"]
@@ -98,6 +99,8 @@ def require_access(db, batch, r, *, job=None):
             guard(db, db.get(ProvisioningAccountBatch, item.account_batch_id))
     if r.sso_deleted_at or not r.sso_user_id:
         raise HTTPException(409, "SSO 用户已删除或尚未就绪")
+    if batch.kind == "json_export" and not has_confirmed_subscription_access(r, now()):
+        raise HTTPException(409, SUBSCRIPTION_REQUIRED)
     if job and (
         r.credential_revision != job.credential_revision
         or account_fingerprint(a) != job.account_fingerprint
@@ -234,6 +237,9 @@ def batch_view(db, batch, details=True):
                 "username": records[j.record_id].username,
                 "owner_id": records[j.record_id].owner_id,
                 "credential_state": records[j.record_id].credential_state,
+                "has_password": bool(records[j.record_id].password_encrypted)
+                and records[j.record_id].credential_state != "unknown"
+                and not records[j.record_id].sso_deleted_at,
                 "requires_new_reset": j.reset_state == "pending"
                 or (
                     records[j.record_id].credential_state == "unknown"
@@ -252,6 +258,8 @@ def batch_view(db, batch, details=True):
 
 def validate_record(db, r, actor, kind, group=None):
     validate_operation(db, r, actor, "reset_password")
+    if kind == "json_export" and not has_confirmed_subscription_access(r, now()):
+        raise HTTPException(409, SUBSCRIPTION_REQUIRED)
     if r.active_operation_id:
         raise HTTPException(409, "该用户已有操作正在处理")
     if group and (

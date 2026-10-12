@@ -27,6 +27,7 @@ from .identity_login import (
 )
 from .models import AwsAccount
 from .proxies import ProxyUnavailable, check_account_proxy, proxy_selection
+from .subscription_eligibility import has_observed_paid_entitlement
 
 
 class ExternalGateway:
@@ -41,6 +42,7 @@ class ExternalGateway:
         )
         self.proxy = None
         self._managed_account = None
+        self.captcha_direct_allowed = not configuration.get('_managed_account_id')
         self._guard = guard
         if configuration.get('_managed_account_id'):
             try:
@@ -146,6 +148,8 @@ class ExternalEnterpriseAuth(EnterpriseAuth):
             params={'profileArn': state['profile']['arn'], 'origin': 'AI_EDITOR', 'resourceType': 'AGENTIC_REQUEST'})
         if not verified_external_identity(usage, state['binding']['directory'], state['expected_user_id']):
             raise AuthError('identity_mismatch')
+        if not getattr(self.gateway, '_managed_account', None) and not has_observed_paid_entitlement(usage):
+            raise AuthError('paid_entitlement_unconfirmed')
         state['result'] = {
             **state['tokens'], **state['registration'], 'authRegion': state['binding']['region'],
             'apiRegion': region, 'startUrl': state['binding']['portal'], 'profile': state['profile'],

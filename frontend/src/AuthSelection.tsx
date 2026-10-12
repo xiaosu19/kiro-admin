@@ -41,7 +41,7 @@ export function AuthRecordTable({ user, kind, records, selected, disabled, onCha
       {records.map(record => <tr key={record.id} aria-selected={ids.includes(record.id)}>
         <td><input type="checkbox" aria-label={`选择 ${record.username}`} checked={ids.includes(record.id)} disabled={disabled || !canUseAuthRecord(record, user, kind) || (ids.length >= 100 && !ids.includes(record.id))} onChange={e => change([record], e.target.checked)} /></td>
         <td className="mono">{record.username}</td><td>{record.account_name || "—"}</td>
-        <td>{record.operation_pending || record.operation ? "有任务正在处理或待核对" : record.sso_deleted_at ? "SSO 已删除" : !record.sso_user_id ? "SSO 尚未就绪" : credentialLabel(record.credential_state)}</td>
+        <td>{record.operation_pending || record.operation ? "有任务正在处理或待核对" : record.sso_deleted_at ? "SSO 已删除" : !record.sso_user_id ? "SSO 尚未就绪" : credentialLabel(record.credential_state, record.has_password)}</td>
       </tr>)}
     </tbody></table></div>
   </>;

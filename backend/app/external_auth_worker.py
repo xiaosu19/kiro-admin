@@ -21,9 +21,10 @@ from .external_enterprise import (
     discover_region,
 )
 from .identity_login import AuthError
-from .models import User, now
+from .models import Subscription, User, now
 from .retry_policy import MAX_AUTOMATIC_RETRIES, RETRY_DELAYS, classify_failure
 from .security import audit, decrypt, encrypt
+from .captcha_errors import captcha_failure
 
 
 class LeaseLost(Exception):
@@ -169,8 +170,7 @@ def finish(item_id, token, progress):
             elif progress.status == 'challenge':
                 automatic = decrypt(progress.sealed_state).get('captcha_automation', {})
                 if automatic.get('status') == 'requires_action':
-                    item.error_code = automatic.get('reason', 'captcha_limit')
-                    item.error = '自动验证未通过或此挑战不受支持，请查看人工处理提示'
+                    item.error_code, item.error = captcha_failure(automatic)
             item.next_poll_at = (datetime.fromtimestamp(progress.next_poll_at, timezone.utc).replace(tzinfo=None)
                                  if progress.next_poll_at is not None else None)
         item.lease_token = item.lease_until = None
@@ -240,6 +240,9 @@ def run_one(*, lane_id=None, gateway_factory=None, auth_factory=None):
                     actor_id = _batch.actor_id
                     configuration = json.loads(item.configuration)
                     password = decrypt(item.input_encrypted)['password'] if item.input_encrypted else None
+                    managed = db.get(Subscription, configuration['_managed_record_id']) if configuration.get('_managed_record_id') else None
+                    if managed and managed.credential_state == 'permanent' and managed.password_encrypted:
+                        password = decrypt(managed.password_encrypted)
                     sealed = item.workflow_encrypted
                     answer = decrypt(item.answer_encrypted) if item.answer_encrypted else None
                     db.expunge(item)

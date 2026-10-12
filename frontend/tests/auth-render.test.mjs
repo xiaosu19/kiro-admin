@@ -34,6 +34,13 @@ test("partial batch displays per-account outcomes, excluded count, deadline and 
   for (const label of ["success-user", "failed-user", "unknown-user", "永久密码", "一次性密码", "密码状态待核对", "明确再次重置", "关闭 MFA", "下载截止"])
     assert.ok(html.includes(label), label);
 });
+test("JSON queue explains current saved password type and subscribed first-login conversion", () => {
+  const html = render(h(AuthBatchView, { batch, ...actions }));
+  assert.match(html, /当前密码类型.*已保存/);
+  assert.match(html, /订阅.*有效/);
+  assert.match(html, /AWS 要求.*首次登录.*保存永久密码.*JSON/);
+  assert.match(html, /已有永久密码.*保留/);
+});
 test("purged and expired exports direct regeneration without offering another download", () => {
   for (const state of ["downloaded", "expired", "cancelled"]) {
     const html = render(h(AuthBatchView, { batch: { ...batch, state }, ...actions }));
@@ -67,6 +74,17 @@ test("account table labels hidden jobs and disables their checkboxes", () => {
     { id: "hidden", username: "busy-user", owner_id: 7, sso_user_id: "sso", state: "completed", has_password: true, credential_state: "permanent", operation: null, operation_pending: true },
   ] }));
   assert.match(html, /有任务正在处理或待核对/); assert.match(html, /disabled=""/);
+});
+test("saved credential labels do not claim a one-time password exists when absent", () => {
+  const html = render(h(AuthRecordTable, { user: { id: 7, role: "member" }, kind: "json_export", selected: [], disabled: false, onChange() {}, records: [
+    { id: "missing", username: "missing-password", owner_id: 7, sso_user_id: "sso", state: "completed", has_password: false, credential_state: "one_time", subscription_status: "active" },
+  ] }));
+  assert.match(html, /未保存登录密码/); assert.doesNotMatch(html, /一次性密码/);
+  assert.match(html, /disabled=""/);
+  const queue = render(h(AuthBatchView, { batch: { ...batch, items: [
+    { record_id: "missing", username: "missing-password", state: "queued", has_password: false, credential_state: "one_time" },
+  ] }, ...actions }));
+  assert.match(queue, /未保存登录密码/); assert.doesNotMatch(queue, /<td>一次性密码<\/td>/);
 });
 
 test("login detail shows a confirmed permanent password and never renders an unknown candidate", () => {

@@ -112,6 +112,7 @@ export function AuthBatchView({ batch, busy, onAction, onDownload, onChallenge }
       </tbody></table></div>
     </div>}
     {batch.kind === "json_export" && <>
+      <p className="muted">当前密码类型显示账号已保存的凭据。仅订阅仍有效的账号可导出；若 AWS 要求首次登录修改密码，会先保存永久密码，再生成 JSON。已有永久密码会保留。</p>
       {live ? <p className="muted">全部处理结束后，可下载成功结果；每个文件以用户名命名。不包含未成功的 {batch.failure_count} 人。下载后结果会清除。</p> : <p className="info-note">{batch.state === "downloaded" ? "此批次已经下载。" : batch.state === "expired" ? "此批次已过期。" : "此批次已取消。"}结果已清除，无法再次下载；如需文件，请重新选择用户生成。</p>}
       {batchCanDownload(batch) && <button className="primary" disabled={busy} onClick={onDownload}>下载 {batch.success_count} 份 JSON（ZIP）</button>}
     </>}
@@ -130,7 +131,7 @@ export function AuthBatchView({ batch, busy, onAction, onDownload, onChallenge }
           {item.error && <small className="proxy-failed">{item.error}</small>}
           {item.cancel_requested && ["queued", "running", "challenge", "polling"].includes(item.state) && <small>已请求取消，等待当前步骤结束</small>}
         </td>
-        <td>{credentialLabel(item.credential_state)}</td>
+        <td>{credentialLabel(item.credential_state, item.has_password)}</td>
         <td><div className="row-actions">
           {live && !item.cancel_requested && <>
             {item.state === "challenge" && <button className="text-button" disabled={busy} onClick={() => onChallenge(item)}>人工验证</button>}

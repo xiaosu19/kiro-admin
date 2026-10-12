@@ -19,7 +19,7 @@ export function ExternalBatchTable({ batch, busy, onAction, onDownload, onChalle
   return <><p role="status">共 {batch.total} 人 · 成功 {batch.success_count} · 未成功 {batch.failure_count}</p>
     <p className="muted">提交：{date(batch.created_at)} · 任务截止：{date(batch.expires_at)}{batch.download_expires_at && <> · 下载截止：{date(batch.download_expires_at)}</>}</p>
     {batch.download_ready && <button className="primary" disabled={busy} onClick={() => onDownload()}>下载成功结果 JSON ZIP</button>}
-    <p className="muted">只导出实际成功的 Token。下载后对应结果会清除；单个结果可直接下载 JSON。</p>
+    <p className="muted">只导出实际成功且通过订阅校验的 Token。外部账号须由 AWS 用量响应确认受支持的付费方案。下载后对应结果会清除；单个结果可直接下载 JSON。</p>
     <div className="table-wrap"><table><thead><tr><th>用户 / 登录入口</th><th>进度</th><th>操作</th></tr></thead><tbody>
       {batch.items?.map(item => <tr key={item.id}><td>{item.username}<small>{item.portal_url}</small></td><td>{item.state === "downloaded" ? "已下载并清理" : authStateLabel[item.state] || item.state}
         {item.state === "running" && <small>{externalStages[item.stage] || "处理账号"}</small>}
@@ -58,7 +58,7 @@ function ExternalProgress({ id, user, notify, onChanged }: { id: string; user: U
   }
   const challenge = batch?.items?.find(i => i.id === challengeId && i.state === "challenge" && !i.cancel_requested);
   const authItem: AuthItem | null = challenge ? { ...challenge, state: "challenge", record_id: challenge.id,
-    operation_id: challenge.id, owner_id: user.id, credential_state: "unknown", requires_new_reset: false } : null;
+    operation_id: challenge.id, owner_id: user.id, credential_state: "unknown", has_password: false, requires_new_reset: false } : null;
   return <section className="panel"><div className="section-heading"><h2>粘贴转换进度</h2><button className="secondary" disabled={busy} onClick={() => void refresh()}>刷新进度</button></div>
     <AuthError text={error || remote.error} />
     {batch && !denied.current && <><ExternalBatchTable batch={batch} busy={busy}
@@ -109,11 +109,11 @@ export function ExternalJsonExport({ user, selectedId, onSelected, notify }: {
     if (batch && current()) accepted(batch);
   }
   return <><section className="panel auth-composer"><h2>粘贴单个或批量账号</h2>
-    <p className="info-note">支持本系统复制的登录信息、TXT、CSV 或账号 JSON，每批最多 100 个。未填区域时从 AWS 登录入口读取。首次登录要求改密时，会自动设置永久密码并保存到成功 JSON；失败或取消后可下载凭据恢复信息。</p>
+    <p className="info-note">支持 AWS 原始登录信息块、本系统复制的登录信息、TXT、CSV 或账号 JSON，每批最多 100 个。可一起粘贴默认 AWS access portal URL 和双栈 AWS access portal URL，两种入口会识别为同一个账号；多个账号可连续粘贴。双栈入口会自动补充登录区域和实例信息。首次登录要求改密时，会自动设置永久密码并保存到成功 JSON；失败或取消后可下载凭据恢复信息。</p>
     <label className="field"><span>账号信息</span><textarea aria-label="粘贴账号信息" rows={9} maxLength={512000} autoComplete="off" spellCheck={false} disabled={busy} value={text}
       placeholder={'https://d-xxxxxxxxxx.awsapps.com/start----us-east-1----用户名----密码'} onChange={e => { epoch.current++; setText(e.target.value); setPreview(null); setError(""); }} /></label>
     <details><summary>支持的 JSON 格式</summary><pre>{'{"start_url":"https://d-xxxxxxxxxx.awsapps.com/start","username":"用户名","password":"密码"}'}</pre>
-      <p className="muted">批量使用数组。可补充 region、identity_store_id、instance_arn、profile_arn、api_region、expected_user_id。自定义登录别名须提供 identity_store_id；新式登录入口需要 instance_arn。多个 Kiro profile 时须提供 profile_arn。</p></details>
+      <p className="muted">批量使用数组。可补充 region、identity_store_id、instance_arn、profile_arn、api_region、expected_user_id。自定义登录别名须提供 identity_store_id；仅提供双栈入口时也须补充 identity_store_id。未填区域时从 AWS 登录入口读取。多个 Kiro profile 时须提供 profile_arn。</p></details>
     {pending && <div className="info-note"><p>上次请求结果尚待确认。先核对下方本人记录；刷新后需粘贴原账号、预览后继续原请求。页面不会保存明文密码或自动重复提交。</p>
       <button className="secondary" disabled={busy || recovery.loading || !!recovery.error} onClick={() => admission.clearAfterReview()}>已核对记录，开始新请求</button></div>}
     <AuthError text={error || admission.error || recovery.error} /><button className="secondary" disabled={busy || !text.trim()} onClick={() => void inspect()}>{busy ? "处理中…" : "解析并预览"}</button>

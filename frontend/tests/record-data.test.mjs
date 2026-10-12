@@ -11,7 +11,7 @@ const accountA = `/sso-users?page=1&${recordQuery({ aws_account_id: 1, q: "Ali%_
 const accountB = `/sso-users?page=1&${recordQuery({ aws_account_id: 2, q: "BeTa", status: "active" })}`;
 const page = (account, username) => ({ total: 1, page: 1, items: [{
   id: `${account}-${username}`, aws_account_id: account, username, owner_id: 7,
-  sso_user_id: `sso-${username}`, state: "completed", credential_state: "permanent", has_password: true,
+  sso_user_id: `sso-${username}`, state: "completed", subscription_status: "active", credential_state: "permanent", has_password: true,
 }] });
 function find(node, predicate) {
   if (!node || typeof node !== "object") return null;

@@ -34,12 +34,20 @@ export function selectPreviewIds(selected: readonly string[], preview: readonly 
   if (selected.some(id => !preview.includes(id))) throw new Error("分组预览已变化，请重新选择用户。");
   return [...selected];
 }
+export function hasConfirmedSubscriptionAccess(r: Pick<RecordItem, "subscription_status" | "access_ends_at">, instant = Date.now()) {
+  if (!["active", "cancel_scheduled"].includes(r.subscription_status || "")) return false;
+  if (!r.access_ends_at) return r.subscription_status === "active";
+  const raw = r.access_ends_at;
+  const expiry = Date.parse(/(?:Z|[+-]\d{2}:\d{2})$/i.test(raw) ? raw : raw + "Z");
+  return Number.isFinite(expiry) && expiry > instant;
+}
 export function canUseAuthRecord(r: RecordItem, user: User, kind: AuthKind) {
   return (r.owner_id === user.id || user.role === "admin") && !!r.sso_user_id && !r.sso_deleted_at &&
     ["completed", "failed"].includes(r.state) && !r.operation_pending && !r.operation &&
-    (kind !== "json_export" || r.has_password || r.credential_state === "unknown");
+    (kind !== "json_export" || hasConfirmedSubscriptionAccess(r) && (r.has_password || r.credential_state === "unknown"));
 }
-export function credentialLabel(state?: CredentialState) {
+export function credentialLabel(state?: CredentialState, hasPassword?: boolean) {
+  if (hasPassword === false && state !== "unknown") return "未保存登录密码";
   return state === "one_time" ? "一次性密码" : state === "permanent" ? "永久密码" : "密码状态待核对";
 }
 export function credentialText(c: LoginCredential) {

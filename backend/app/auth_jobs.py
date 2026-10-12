@@ -47,6 +47,7 @@ from .models import (
 )
 from .security import audit, decrypt, encrypt
 from .automatic_retries import ready_clause, schedule_retry, settle_retry
+from .captcha_errors import captcha_failure
 
 logger = logging.getLogger("kiro.auth")
 
@@ -260,8 +261,7 @@ def finish_step(job_id, token, progress):
             job.revision, job.stage = progress.revision, progress.stage
             automatic = decrypt(progress.sealed_state).get("captcha_automation", {})
             if progress.status == "challenge" and automatic.get("status") == "requires_action":
-                job.error_code = automatic.get("reason", "captcha_limit")
-                op.error = "自动验证未通过或不支持此挑战，请按当前验证提示继续处理"
+                job.error_code, op.error = captcha_failure(automatic)
             else:
                 job.error_code = op.error = None
             job.next_poll_at = (
