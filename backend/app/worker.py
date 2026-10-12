@@ -390,6 +390,9 @@ def await_group_entitlement(record_id, token, membership_id, frozen_config):
         join_context(db, record, group, recovering=True)
         if not membership_id:
             raise RuntimeError("缺少已确认的 AWS 成员身份")
+        if record.group_membership_id and record.group_membership_id != membership_id:
+            raise AwsFailure("原先确认的 AWS 分组成员身份已变化，保留原请求并等待核对",
+                             uncertain=True, code="group_entitlement_drift")
         released = db.execute(update(ManagedGroup).where(
             ManagedGroup.id == group.id, ManagedGroup.active_job_id == record.id,
         ).values(active_job_id=None))

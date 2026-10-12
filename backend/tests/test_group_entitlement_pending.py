@@ -268,6 +268,51 @@ def test_old_uncertain_membership_moves_to_readonly_only_after_actual_confirmati
     assert native.writes == writes
 
 
+def test_old_pending_confirmed_membership_id_cannot_be_replaced_during_migration(alice, native, monkeypatch):
+    record_id = admit_members(alice, native, monkeypatch)[0]
+    native.uncertain = True
+    assert worker.run_one(native, record_id=record_id)
+    native.uncertain = False
+    key = ("remote-group-1", "sso-" + record_id)
+    original_membership = native.members[key]
+    with SessionLocal() as db:
+        record = db.get(Subscription, record_id)
+        assert record.step == "group_membership_pending"
+        # The old worker could save the confirmed membership ID while keeping
+        # the old pending step through aggregate propagation.
+        record.group_membership_id = original_membership
+        db.commit()
+        before = stable_snapshot(db, record_id)
+    native.members[key] = "synthetic-replacement-membership"
+    writes = list(native.writes)
+    forbid_writes(native, monkeypatch)
+    assert alice.post(f"/api/subscriptions/{record_id}/retry").status_code == 202
+    assert worker.run_one(native, record_id=record_id)
+    with SessionLocal() as db:
+        record = db.get(Subscription, record_id)
+        assert record.state == "needs_review" and record.step == "group_membership_pending"
+        assert stable_snapshot(db, record_id) == before
+        assert db.get(ManagedGroup, "group-1").active_job_id == record_id
+        assert not has_confirmed_subscription_access(record, now())
+    assert counter() == (0, 1, 0) and native.writes == writes
+    # Only the originally saved membership may migrate to the read-only stage.
+    native.members[key] = original_membership
+    assert alice.post(f"/api/subscriptions/{record_id}/retry").status_code == 202
+    assert worker.run_one(native, record_id=record_id)
+    with SessionLocal() as db:
+        record, _ = assert_awaiting(db, record_id)
+        assert record.state == "queued" and stable_snapshot(db, record_id) == before
+        assert db.get(ManagedGroup, "group-1").active_job_id is None
+    native.effective_rows = None
+    due("sso", record_id)
+    assert worker.run_one(native, record_id=record_id)
+    with SessionLocal() as db:
+        record = db.get(Subscription, record_id)
+        assert record.state == "completed" and has_confirmed_subscription_access(record, now())
+        assert stable_snapshot(db, record_id)[:-2] == before[:-2]
+    assert counter() == (1, 0, 1) and native.writes == writes
+
+
 @pytest.mark.parametrize("drift", ["membership_missing", "claim_missing", "unmanaged_member"])
 def test_uncertain_membership_drift_never_releases_the_group_lock(alice, native, monkeypatch, drift):
     record_id = admit_members(alice, native, monkeypatch)[0]
