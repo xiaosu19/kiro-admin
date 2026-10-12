@@ -25,8 +25,8 @@ import httpx
 from .auth_widget import public_challenge
 from .identity_login import AuthError
 from .vision_captcha import VisionError
-from .captcha_errors import safe_captcha_code
-from .vision_transport import PublicEndpointTransport
+from .captcha_errors import ActionRequired, safe_captcha_code
+from .vision_transport import PublicEndpointTransport, UnsafeEndpointError
 
 
 MAX_RESPONSE = 8 * 1024 * 1024
@@ -181,6 +181,7 @@ class _ProxyHTTP:
         self.hosts = set(hosts) | ({image_host} if image_host else set())
         self.requests, self.transferred, self.pending, self.completed = 0, 0, 0, 0
         self.image_digests = {}
+        self.last_failure_code = None
         proxy = getattr(gateway, "proxy", None)
         self.proxy_url = getattr(proxy, "url", None)
         self.direct = self.proxy_url is None and getattr(gateway, "captcha_direct_allowed", False) is True
@@ -298,6 +299,8 @@ class _ProxyHTTP:
                     return response.status_code, result_headers, content
         except (TimeoutError, httpx.TimeoutException):
             raise BrowserChallengeError("captcha_timeout") from None
+        except UnsafeEndpointError:
+            raise BrowserChallengeError("captcha_unsafe_destination") from None
         except httpx.HTTPError:
             raise BrowserChallengeError("captcha_browser_failed") from None
         finally:
@@ -471,7 +474,7 @@ async def _inspect(page):
 
 
 async def _drive(page, http, provider, before_recognition, deadline, failure):
-    attempts, opened, submitted = 0, False, None
+    attempts, opened, submitted, rejected = 0, False, None, None
     while True:
         _remaining(deadline)
         http.gateway._check_proxy()
@@ -504,6 +507,9 @@ async def _drive(page, http, provider, before_recognition, deadline, failure):
                     if not reloaded or version.digest is None or version.digest == submitted.digest:
                         await asyncio.sleep(min(0.1, _remaining(deadline)))
                         continue
+                if submitted and rejected is not submitted:
+                    http.last_failure_code = "captcha_answer_rejected"
+                    rejected = submitted
                 bounds = await _in_frame(current.frame, current.image.bounding_box())
                 if not bounds or not 4 <= bounds["width"] <= 2000 or not 4 <= bounds["height"] <= 1000:
                     raise BrowserChallengeError("captcha_unsupported_challenge")
@@ -527,6 +533,7 @@ async def _drive(page, http, provider, before_recognition, deadline, failure):
                 try:
                     answer = await provider.arecognize(cropped, mime_type="image/png")
                 except VisionError as error:
+                    http.last_failure_code = safe_captcha_code(error.code)
                     if error.code not in {"captcha_provider_failed", "captcha_timeout", "captcha_invalid_response"}:
                         raise
                     http.gateway._check_proxy()
@@ -675,8 +682,17 @@ async def _solve(challenge, gateway, provider, deadline, before_recognition):
             if tasks[1] in done:
                 await tasks[1]
             return await tasks[0]
+    except ActionRequired as error:
+        if http is not None and http.last_failure_code:
+            error.last_failure_code = http.last_failure_code
+        raise
     except (TimeoutError, PlaywrightTimeout):
-        raise BrowserChallengeError("captcha_timeout") from None
+        raise BrowserChallengeError("captcha_timeout",
+            last_failure_code=http.last_failure_code if http is not None else None) from None
+    except BrowserChallengeError as error:
+        if error.last_failure_code is None and http is not None:
+            error.last_failure_code = http.last_failure_code
+        raise
     except PlaywrightError:
         raise BrowserChallengeError("captcha_browser_failed") from None
     finally:

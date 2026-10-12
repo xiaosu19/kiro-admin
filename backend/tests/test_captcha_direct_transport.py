@@ -57,7 +57,7 @@ def test_external_direct_rejects_nonpublic_dns_before_wire(monkeypatch, address)
         async with direct_http() as transport:
             with pytest.raises(captcha_browser.BrowserChallengeError) as error:
                 await transport.fetch('GET', 'https://' + ROOT + '/fixture', {}, None)
-            assert error.value.code == 'captcha_browser_failed'
+            assert error.value.code == 'captcha_unsafe_destination'
     asyncio.run(scenario())
 
 
@@ -86,4 +86,17 @@ def test_external_direct_checks_revocation_before_any_wire(monkeypatch):
             with pytest.raises(RuntimeError) as error:
                 await transport.fetch('GET', 'https://' + ROOT + '/fixture', {}, None)
             assert error.value is revoked
+    asyncio.run(scenario())
+
+
+def test_external_direct_keeps_ordinary_network_failure_distinct_from_unsafe_dns(monkeypatch):
+    async def resolve(*args):
+        raise httpx.ConnectError('synthetic ordinary connection failure')
+    monkeypatch.setattr(vision_transport, 'resolve_public', resolve)
+    async def scenario():
+        async with direct_http() as transport:
+            with pytest.raises(captcha_browser.BrowserChallengeError) as error:
+                await transport.fetch('GET', 'https://' + ROOT + '/fixture', {}, None)
+            assert error.value.code == 'captcha_browser_failed'
+            assert 'synthetic' not in str(error.value)
     asyncio.run(scenario())

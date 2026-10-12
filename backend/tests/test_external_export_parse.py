@@ -95,6 +95,20 @@ def test_extra_csv_values_fail_safely_without_echoing_supplied_passwords():
     assert 'UnexpectedSecret9!' not in str(error.value)
 
 
+@pytest.mark.parametrize('text', [
+    '{"start_url":"' + URL + '","username":"alice","password":"Synthetic8!","password":"Conflicting9!"}',
+    '{"accounts":[],"accounts":[{"start_url":"' + URL + '","username":"alice","password":"Synthetic8!"}]}',
+    '登录地址,用户名,密码,密码\n' + URL + ',alice,Synthetic8!,Conflicting9!',
+    'start_url,username,password,password\n' + URL + ',alice,Synthetic8!,Conflicting9!',
+    '登录地址,用户名,密码,password\n' + URL + ',alice,Synthetic8!,Synthetic8!',
+])
+def test_duplicate_json_keys_or_csv_headers_are_rejected_without_secret_echo(text):
+    with pytest.raises(InputError) as error:
+        parse_accounts(text)
+    assert 'Synthetic8!' not in str(error.value)
+    assert 'Conflicting9!' not in str(error.value)
+
+
 def test_delimited_rows_and_region_optional():
     rows = parse_accounts(URL + '----us-east-1----alice----Synthetic8!\n' + URL + '\tbob\tOther9!')
     assert [r.username for r in rows] == ['alice', 'bob']

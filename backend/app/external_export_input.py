@@ -188,7 +188,10 @@ def text_rows(text):
         raise InputError('请粘贴至少一个账号')
     delimiter = '\t' if '\t' in lines[0] else ','
     header = next(csv.reader([lines[0]], delimiter=delimiter))
-    if any(ALIASES.get(x.strip(), x.strip()) == 'username' for x in header):
+    header_keys = [field_name(x) for x in header]
+    if 'username' in header_keys:
+        if len(header_keys) != len(set(header_keys)):
+            raise InputError('CSV 表头包含重复字段，请保留每个字段一列')
         return list(csv.DictReader(io.StringIO(text), delimiter=delimiter))
     rows = []
     for line in lines:
@@ -210,13 +213,24 @@ def text_rows(text):
     return rows
 
 
+def unique_json_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise InputError('JSON 对象包含重复字段，请核对后重新粘贴')
+        result[key] = value
+    return result
+
+
 def parse_accounts(text):
     if not isinstance(text, str) or not text.strip() or len(text.encode()) > MAX_INPUT_BYTES:
         raise InputError('粘贴内容不能为空，且最多 512 KB')
     text = text.lstrip('\ufeff').strip()
     if text.startswith(('{', '[')):
         try:
-            rows = json.loads(text)
+            rows = json.loads(text, object_pairs_hook=unique_json_object)
+        except InputError:
+            raise
         except (ValueError, RecursionError):
             raise InputError('JSON 内容无法解析') from None
         if isinstance(rows, dict):

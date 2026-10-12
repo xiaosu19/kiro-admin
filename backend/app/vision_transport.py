@@ -10,6 +10,10 @@ import socket
 import httpx
 
 
+class UnsafeEndpointError(httpx.ConnectError):
+    """An explicit destination guard rejection, distinct from network failures."""
+
+
 def public_address(value):
     address = ip_address(value)
     if (not address.is_global or address.is_multicast or getattr(address, "is_site_local", False)
@@ -34,7 +38,7 @@ async def resolve_public(host, port):
         )
         addresses = list(dict.fromkeys(record[4][0] for record in records))
     if not addresses or any(not public_address(value) for value in addresses):
-        raise httpx.ConnectError("Provider address is not public")
+        raise UnsafeEndpointError("Provider address is not public")
     return addresses[0]
 
 
@@ -46,7 +50,7 @@ class PublicEndpointTransport(httpx.AsyncBaseTransport):
 
     async def handle_async_request(self, request):
         if request.url.scheme != "https":
-            raise httpx.ConnectError("Provider requires HTTPS")
+            raise UnsafeEndpointError("Provider requires HTTPS")
         host = request.url.host
         address = await resolve_public(host, request.url.port or 443)
         headers = request.headers.copy()

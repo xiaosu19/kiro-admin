@@ -14,11 +14,7 @@ from pathlib import Path
 from .config import settings
 from .database import engine
 from .vision_captcha import VisionError
-from .captcha_errors import safe_captcha_code
-
-
-class ActionRequired(Exception):
-    pass
+from .captcha_errors import ActionRequired, safe_captcha_code
 
 
 @contextmanager
@@ -168,8 +164,8 @@ def _solve(adapter, progress, provider, browser_solver):
                 publish("captcha_verified")
                 return progress
             automation["last_failure_code"] = "captcha_answer_rejected"
-        except ActionRequired:
-            return pause(limit_reason())
+        except ActionRequired as error:
+            return pause(limit_reason(), error.last_failure_code)
         except VisionError as error:
             if error.code in {"captcha_unavailable", "captcha_invalid_configuration", "captcha_invalid_image"}:
                 return pause(error.code)

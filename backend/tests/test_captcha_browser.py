@@ -1007,6 +1007,45 @@ def test_temporary_vision_errors_still_stop_at_three_actual_attempts(browser_fix
     assert not any(r.url.path == "/verify" for r in widget.requests)
 
 
+@pytest.mark.parametrize('limit,cause,first_rejected', [
+    (1, 'captcha_provider_failed', False), (2, 'captcha_provider_failed', False),
+    (1, 'captcha_answer_rejected', False), (2, 'captcha_answer_rejected', False),
+    (2, 'captcha_provider_failed', True),
+])
+def test_global_ams_budget_preserves_last_safe_failure(browser_fixture, monkeypatch, limit, cause, first_rejected):
+    from app.config import settings
+    from app.security import decrypt
+    from app.vision_captcha import VisionError
+    from test_auth_automation import CaptchaLogin, solve
+
+    module = browser_module()
+    install, _, launches = browser_fixture
+    install('reject' if cause == 'captcha_answer_rejected' or first_rejected else 'success')
+    monkeypatch.setattr(settings, 'captcha_max_attempts', limit)
+
+    class FailingVision(Vision):
+        async def arecognize(self, *args, **kwargs):
+            answer = await super().arecognize(*args, **kwargs)
+            if cause == 'captcha_provider_failed' and (not first_rejected or len(self.images) > 1):
+                raise VisionError(cause)
+            return answer
+
+    adapter, vision = CaptchaLogin(), FailingVision()
+    adapter.gateway.proxy.url = PROXY
+    def browser(_challenge, gateway, provider, *, deadline, before_recognition):
+        return module.solve_ams(challenge(), gateway, provider, deadline=deadline,
+                                before_recognition=before_recognition)
+    result = solve(adapter, adapter.start(ams=True), vision, browser_solver=browser)
+    automatic = decrypt(result.sealed_state)['captcha_automation']
+    assert automatic['reason'] == 'captcha_attempt_limit'
+    assert automatic.get('last_failure_code') == cause
+    assert automatic['attempts'] == len(vision.images) == limit
+    assert automatic['submissions'] == 0 and not adapter.answers
+    assert len(launches) == 1
+    following = solve(adapter, result, vision, browser_solver=browser)
+    assert following.status == 'challenge' and len(vision.images) == limit
+
+
 def test_vision_retry_shares_original_deadline(browser_fixture):
     from app.vision_captcha import VisionError
 

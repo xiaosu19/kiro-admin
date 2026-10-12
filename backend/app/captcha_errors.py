@@ -23,6 +23,12 @@ def safe_captcha_code(code, fallback="captcha_failed"):
     return code if isinstance(code, str) and code in MESSAGES else fallback
 
 
+class ActionRequired(Exception):
+    """A durable CAPTCHA budget stop, optionally retaining a safe prior cause."""
+
+    last_failure_code = None
+
+
 def captcha_failure(automation):
     code = safe_captcha_code(automation.get("reason"))
     message = MESSAGES[code]
