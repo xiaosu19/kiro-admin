@@ -160,6 +160,9 @@ def test_sync_reads_aws_aggregate_not_latest_group_history(alice, native):
 
 
 def test_missing_aggregate_after_write_keeps_reservation_for_readonly_recovery(alice, native):
+    from app.retry_models import AutomaticRetry
+    from test_automatic_retries import due
+
     seed_group(1)
     native.effective_rows = []
     result = subscribe(alice)
@@ -167,8 +170,18 @@ def test_missing_aggregate_after_write_keeps_reservation_for_readonly_recovery(a
     run_native()
     assert counter() == (0, 1, 0)
     batch = alice.get(f"/api/lifecycle-batches/{result.json()['id']}").json()
-    assert batch["items"][0]["state"] == "needs_review"
+    item = batch["items"][0]
+    assert item["state"] == "queued"
+    with SessionLocal() as db:
+        retry = db.get(AutomaticRetry, ("native", item["operation_id"]))
+        assert retry.mode == "reconcile" and retry.retry_count == 1
     assert len(native.writes) == 1
+    native.effective_rows = None
+    due("native", item["operation_id"])
+    run_native()
+    batch = alice.get(f"/api/lifecycle-batches/{result.json()['id']}").json()
+    assert batch["items"][0]["state"] == "completed"
+    assert counter() == (1, 0, 1) and len(native.writes) == 1
 
 
 def test_personal_user_deadline_runs_while_group_grant_remains(alice, native, monkeypatch):

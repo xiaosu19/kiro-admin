@@ -14,6 +14,10 @@ from .catalog import BY_SUBSCRIPTION_TYPE, PLAN_ORDER
 from .models import GroupJob, GroupMemberActivation, NativeGroupOperation, Plan, PlanChange, RecordOperation, now
 
 
+def observation_error(message, *, code="subscription_observation_invalid", retryable=False):
+    return AwsFailure(message, uncertain=True, code=code, retryable=retryable)
+
+
 def active_source(info):
     return info["status"] == "active" or bool(
         info.get("expires_at") and info["expires_at"] > now()
@@ -23,11 +27,11 @@ def active_source(info):
 def confirmed_sources(gateway, record):
     sources = gateway.user_subscription_sources(record)
     if not isinstance(sources, list):
-        raise AwsFailure("AWS 订阅来源格式不明确，请核对", uncertain=True)
+        raise observation_error("AWS 订阅来源格式不明确，请核对")
     seen = set()
     for c in sources:
         if not isinstance(c, dict):
-            raise AwsFailure("AWS 订阅声明格式不明确，请核对", uncertain=True)
+            raise observation_error("AWS 订阅声明格式不明确，请核对")
         source, gid = c.get("source"), c.get("group_id")
         key = (source, gid)
         kind, pending = c.get("subscription_type"), c.get("pending_type")
@@ -37,15 +41,18 @@ def confirmed_sources(gateway, record):
             or (source == "USER" and gid is not None)
             or key in seen
             or c.get("status") not in ("active", "cancelled", "not_subscribed")
-            or (kind not in PLAN_ORDER and c.get("status") != "not_subscribed")
+            or (c.get("status") != "not_subscribed" and (
+                not isinstance(kind, str) or kind not in PLAN_ORDER
+            ))
             or (pending is not None and (
-                pending not in PLAN_ORDER or kind not in PLAN_ORDER
+                not isinstance(pending, str) or not isinstance(kind, str)
+                or pending not in PLAN_ORDER or kind not in PLAN_ORDER
                 or PLAN_ORDER[pending] >= PLAN_ORDER[kind]
                 or c.get("status") != "active" or c.get("expires_at") is not None
             ))
             or (c.get("expires_at") is not None and not isinstance(c["expires_at"], datetime))
         ):
-            raise AwsFailure("AWS 订阅来源重复、未知或待确认，请核对", uncertain=True)
+            raise observation_error("AWS 订阅来源重复、未知或待确认，请核对")
         seen.add(key)
     return sources
 
@@ -191,47 +198,77 @@ def access_sources(observation):
             and not (c["source"] == "USER" and observation.get("user_cancellation"))]
 
 
+def aggregate_fields(row):
+    raw_type, raw_pending = row.get("type"), row.get("newType")
+    if not isinstance(raw_type, dict) or (raw_pending is not None and not isinstance(raw_pending, dict)):
+        raise observation_error("AWS 整体订阅套餐格式不明确")
+    kind, pending = raw_type.get("amazonQ"), (raw_pending or {}).get("amazonQ")
+    if not isinstance(kind, str) or (pending is not None and not isinstance(pending, str)):
+        raise observation_error("AWS 整体订阅套餐格式不明确")
+    kind, pending = ALIASES.get(kind, kind), ALIASES.get(pending, pending)
+    raw_status, raw_source = row.get("status"), row.get("aggregatedSubscriptionType")
+    source = {"INDIVIDUAL": "USER", "GROUP": "GROUP",
+              "INDIVIDUAL_AND_GROUP": "USER_AND_GROUP"}.get(raw_source) if isinstance(raw_source, str) else None
+    if (kind not in PLAN_ORDER or source is None or raw_status not in
+            ("ACTIVE", "PENDING", "PENDING_REMOVAL", "CANCELLED", "CANCELED")
+            or (pending is not None and pending not in PLAN_ORDER)):
+        raise observation_error("AWS 整体订阅状态、套餐或来源未支持，请核对")
+    try:
+        boundary = aws_datetime(row.get("expirationDate"))
+    except AwsFailure:
+        raise observation_error("AWS 订阅时间格式无法识别") from None
+    return kind, pending, raw_status, source, boundary
+
+
+def confirm_aggregate_shape(rows):
+    """A missing user is propagation only when the aggregate itself is sound."""
+    seen = set()
+    for row in rows:
+        principal = row.get("principal")
+        uid = principal.get("user") if isinstance(principal, dict) else None
+        if not isinstance(uid, str) or not uid:
+            raise observation_error("AWS 整体订阅用户格式不明确")
+        if uid in seen:
+            raise observation_error("AWS 整体订阅重复，等待核对", code="subscription_observation_duplicate")
+        seen.add(uid)
+        aggregate_fields(row)
+
+
 def observe_subscription(gateway, record, *, rows=None, sources=None):
     sources = confirmed_sources(gateway, record) if sources is None else sources
     receipt = user_cancellation_receipt(record, sources)
     rows = gateway.report_subscriptions() if rows is None else rows
     if not isinstance(rows, list) or any(not isinstance(r, dict) for r in rows):
-        raise AwsFailure("AWS 整体订阅响应格式不明确", uncertain=True)
+        raise observation_error("AWS 整体订阅响应格式不明确")
     matches = [r for r in rows if isinstance(r.get("principal"), dict)
                and r["principal"].get("user") == record.sso_user_id]
     live = access_sources({"sources": sources, "user_cancellation": receipt})
-    if len(matches) > 1 or (not matches and live):
-        raise AwsFailure("AWS 整体订阅缺失或重复，等待核对", uncertain=True)
+    if len(matches) > 1:
+        raise observation_error("AWS 整体订阅重复，等待核对", code="subscription_observation_duplicate")
+    if not matches and live:
+        confirm_aggregate_shape(rows)
+        # Claims/membership have confirmed access, but no aggregate row can
+        # confirm the effective tier yet. Keep the original pending write and
+        # let its fenced worker reconcile reads within the existing budget.
+        raise observation_error("AWS 授权已确认，整体订阅尚未同步，等待只读核对",
+                                code="subscription_observation_propagating", retryable=True)
     effective = dict(status="not_subscribed", subscription_type=None, expires_at=None,
                      pending_type=None, expected_effective_at=None, source=None, aws_status=None)
     if matches:
         row = matches[0]
-        raw_type, raw_pending = row.get("type"), row.get("newType")
-        if not isinstance(raw_type, dict) or (raw_pending is not None and not isinstance(raw_pending, dict)):
-            raise AwsFailure("AWS 整体订阅套餐格式不明确", uncertain=True)
-        kind = ALIASES.get(raw_type.get("amazonQ"), raw_type.get("amazonQ"))
-        pending = (raw_pending or {}).get("amazonQ")
-        pending = ALIASES.get(pending, pending)
-        raw_status = row.get("status")
-        source = {"INDIVIDUAL": "USER", "GROUP": "GROUP",
-                  "INDIVIDUAL_AND_GROUP": "USER_AND_GROUP"}.get(row.get("aggregatedSubscriptionType"))
-        if (kind not in PLAN_ORDER or source is None or raw_status not in
-                ("ACTIVE", "PENDING", "PENDING_REMOVAL", "CANCELLED", "CANCELED")
-                or (pending is not None and pending not in PLAN_ORDER)):
-            raise AwsFailure("AWS 整体订阅状态、套餐或来源未支持，请核对", uncertain=True)
+        kind, pending, raw_status, source, boundary = aggregate_fields(row)
         # AWS PENDING is a usage/billing status, not an unconfirmed assignment.
         # Exact claims still must independently confirm the granted access.
         status = "active" if raw_status in ("ACTIVE", "PENDING") else "cancelled"
         if status == "active" and not live:
-            raise AwsFailure("AWS 整体订阅与授权来源尚未一致，等待核对", uncertain=True)
-        boundary = aws_datetime(row.get("expirationDate"))
+            raise observation_error("AWS 整体订阅与授权来源尚未一致，等待核对")
         expires = None if pending else boundary
         if not expires and status == "cancelled" and live:
             # Some aggregate rows omit expirationDate. Only unanimous source
             # cancellation boundaries prove an effective end-of-period deadline.
             boundaries = {c.get("expires_at") for c in live}
             if None in boundaries or len(boundaries) != 1:
-                raise AwsFailure("AWS 整体取消状态与独立授权不一致，等待核对", uncertain=True)
+                raise observation_error("AWS 整体取消状态与独立授权不一致，等待核对")
             expires = boundaries.pop()
         effective.update(status=status, subscription_type=kind, expires_at=expires,
                          pending_type=pending, expected_effective_at=boundary if pending else None,

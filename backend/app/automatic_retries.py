@@ -5,7 +5,10 @@ from datetime import timedelta
 
 from sqlalchemy import select
 
-from .models import ProvisioningAccountBatch, ProvisioningItem, now
+from .models import (
+    GroupJob, NativeGroupOperation, ProvisioningAccountBatch, ProvisioningItem,
+    Subscription, now,
+)
 from .retry_models import AutomaticRetry
 from .retry_policy import MAX_AUTOMATIC_RETRIES, RETRY_DELAYS, classify_failure
 
@@ -39,6 +42,18 @@ def provisioning_stopped(db, family, job):
     return bool(row and row.stop_requested_at)
 
 
+def propagation_reconciliation_allowed(db, family, job_id, mode):
+    """Aggregate propagation may resume only an existing read-only step."""
+    if mode != "reconcile":
+        return False
+    if family == "sso":
+        job = db.get(Subscription, job_id)
+        return bool(job and job.step == "group_membership_pending")
+    model = {"native": NativeGroupOperation, "group": GroupJob}.get(family)
+    job = db.get(model, job_id) if model else None
+    return bool(job and job.phase == "pending")
+
+
 def schedule_retry(db, family, job_id, error, *, mode="retry", config_hash=None, stopped=False):
     failure = classify_failure(error)
     row = db.get(AutomaticRetry, (family, job_id))
@@ -46,6 +61,9 @@ def schedule_retry(db, family, job_id, error, *, mode="retry", config_hash=None,
         mode == "reconcile" and failure.unknown and row is not None
         and row.mode == "reconcile" and row.next_retry_at is not None
     )
+    if (failure.code == "subscription_observation_propagating"
+            and not propagation_reconciliation_allowed(db, family, job_id, mode)):
+        allowed = False
     if stopped or failure.stop or not allowed:
         settle_retry(db, family, job_id)
         return False

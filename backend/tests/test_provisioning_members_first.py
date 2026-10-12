@@ -117,18 +117,21 @@ def test_uncertain_group_write_rechecks_without_resubscribing(alice, gateway):
 
 
 def test_group_readback_delay_does_not_fail_prepared_sso_siblings(alice, gateway):
+    from test_automatic_retries import due
+
     parent = admit(alice, body(quantity=3)).json()
     gateway.effective_rows = []
-    final = drive(parent, alice)
-    assert final['state'] == 'needs_review', final
+    final = drive(parent, alice, predicate=lambda view: bool(view['accounts'][0].get('next_retry_at')))
+    assert final['state'] == 'running', final
     row = final['accounts'][0]
     assert row['phase'] == 'group_open'
+    assert row['native_operation_state'] == 'queued'
+    assert row['retry_mode'] == 'reconcile' and row['automatic_retry_count'] == 1
     assert all(i['state'] == 'prepared' for i in row['items'])
     assert not any(i['auth_batch_id'] for i in row['items'])
     before = list(gateway.events)
     gateway.effective_rows = None
-    reply = action(alice, parent, 'recheck', 'recheck-readback-delay-01')
-    assert reply.status_code == 202, reply.text
+    due('native', row['native_operation_id'])
     final = drive(parent, alice)
     assert final['state'] == 'completed', final
     assert gateway.events == before
