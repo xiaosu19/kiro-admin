@@ -4,12 +4,13 @@ import uuid
 from datetime import timedelta
 
 import pytest
+import requests
 from sqlalchemy import select
 
-from app.aws import AwsFailure
+from app.aws import AwsFailure, AwsGateway
 from app.database import SessionLocal
 from app.models import (
-    GroupJob, GroupMemberActivation, ManagedGroup, NativeGroupOperation, Subscription, now,
+    AwsAccount, GroupJob, GroupMemberActivation, ManagedGroup, NativeGroupOperation, Subscription, now,
 )
 from app.retry_models import AutomaticRetry
 from app.retry_policy import classify_failure
@@ -133,10 +134,158 @@ def test_missing_aggregate_with_expired_source_does_not_retry_or_grant_access(na
     assert observation['effective']['status'] == 'not_subscribed'
 
 
+def native_pending_snapshot(db, job_id):
+    operation = db.get(NativeGroupOperation, job_id)
+    activation = db.scalar(select(GroupMemberActivation).where(GroupMemberActivation.operation_id == job_id))
+    record = db.get(Subscription, activation.record_id)
+    retry = db.get(AutomaticRetry, ('native', job_id))
+    return (operation.phase, operation.aws_request_id, operation.write_requested_at,
+            operation.config_hash, operation.member_snapshot, operation.request_key,
+            record.sso_user_id, record.group_membership_id, record.password_encrypted,
+            record.credential_state, record.credential_revision, activation.id,
+            activation.reserved, activation.counted, retry.config_hash,
+            db.get(ManagedGroup, 'group-1').active_job_id, record.active_operation_id)
+
+
+def pending_native_propagation(alice, native):
+    from app.group_subscription_worker import run_one
+
+    seed_group(1)
+    native.effective_rows = []
+    assert subscribe(alice).status_code == 202
+    assert run_one(native, account_id=1)
+    with SessionLocal() as db:
+        operation = db.scalar(select(NativeGroupOperation))
+        assert operation.state == 'queued' and operation.phase == 'pending'
+        retry = db.get(AutomaticRetry, ('native', operation.id))
+        assert retry.retry_count == 1 and retry.error_code == 'subscription_observation_propagating'
+        return operation.id, native_pending_snapshot(db, operation.id)
+
+
+def assert_native_reconciliation_stopped(native, job_id, snapshot, writes, *, retries=1):
+    from app.group_subscription_worker import run_one
+
+    with SessionLocal() as db:
+        operation = db.get(NativeGroupOperation, job_id)
+        retry = db.get(AutomaticRetry, ('native', job_id))
+        assert operation.state == 'needs_review' and operation.phase == 'pending'
+        assert retry.retry_count == retries and retry.next_retry_at is None
+        assert native_pending_snapshot(db, job_id) == snapshot
+        assert not has_confirmed_subscription_access(db.get(Subscription, 'group-1-record-0'), now())
+    assert native.writes == writes and counter() == (0, 1, 0)
+    assert not run_one(native, account_id=1)
+
+
+@pytest.mark.parametrize('drift', ['unmanaged_member', 'missing_member', 'tier', 'expiry'])
+def test_propagation_reconciliation_stops_on_actual_remote_drift(alice, native, drift):
+    from app.group_subscription_worker import run_one
+
+    job_id, snapshot = pending_native_propagation(alice, native)
+    writes = list(native.writes)
+    if drift == 'unmanaged_member':
+        native.members[('remote-group-1', 'unmanaged-user')] = 'unmanaged-membership'
+    elif drift == 'missing_member':
+        native.members.clear()
+    elif drift == 'tier':
+        native.assignments['remote-group-1']['subscription_type'] = 'Q_DEVELOPER_STANDALONE_PRO_PLUS'
+    else:
+        native.assignments['remote-group-1'].update(status='cancelled', expires_at=now() - timedelta(seconds=1))
+    due('native', job_id)
+    assert run_one(native, account_id=1)
+    assert_native_reconciliation_stopped(native, job_id, snapshot, writes)
+
+
+@pytest.mark.parametrize('parser,bad', [
+    ('claims', 'shape'), ('claims', 'principal'), ('claims', 'tier'),
+    ('claims', 'unhashable_tier'), ('claims', 'duplicate'), ('claims', 'pagination'),
+    ('report', 'shape'), ('report', 'row'), ('report', 'pagination'),
+])
+def test_real_claim_and_report_parser_failures_stop_propagation(alice, native, monkeypatch, parser, bad):
+    from app.group_subscription_worker import run_one
+
+    job_id, snapshot = pending_native_propagation(alice, native)
+    writes = list(native.writes)
+    reader = object.__new__(AwsGateway)
+    with SessionLocal() as db:
+        reader.account = db.get(AwsAccount, 1)
+        db.expunge(reader.account)
+    if parser == 'claims':
+        claim = {'principal': {'group': 'remote-group-1'}, 'type': {'amazonQ': PRO}}
+        response = {
+            'shape': {},
+            'principal': {'claims': [{'principal': None}]},
+            'tier': {'claims': [claim | {'type': None}]},
+            'unhashable_tier': {'claims': [claim | {'type': {'amazonQ': []}}]},
+            'duplicate': {'claims': [claim, claim]},
+            'pagination': {'claims': [claim], 'nextToken': 'repeated-cursor'},
+        }[bad]
+        reader._call = lambda *args: (response, 'synthetic-read-request')
+        monkeypatch.setattr(native, 'group_subscription_info', lambda self, group: reader.group_subscription_info(group))
+    else:
+        response = {'shape': {}, 'row': {'subscriptions': [None]},
+                    'pagination': {'subscriptions': [], 'nextToken': 'repeated-cursor'}}[bad]
+        reader._call = lambda *args: (response, 'synthetic-read-request')
+        monkeypatch.setattr(native, 'report_subscriptions', lambda self: reader.report_subscriptions())
+    due('native', job_id)
+    assert run_one(native, account_id=1)
+    assert_native_reconciliation_stopped(native, job_id, snapshot, writes)
+
+
+def test_temporary_network_read_does_not_reenable_unknown_reconciliation(alice, native, monkeypatch):
+    from app.group_subscription_worker import run_one
+
+    job_id, snapshot = pending_native_propagation(alice, native)
+    writes, reads = list(native.writes), []
+    def read(self):
+        reads.append(True)
+        if len(reads) == 1:
+            raise requests.ReadTimeout('synthetic temporary read failure')
+        raise AwsFailure('unclassified parser or validation failure', uncertain=True)
+    monkeypatch.setattr(native, 'report_subscriptions', read)
+    due('native', job_id)
+    assert run_one(native, account_id=1)
+    with SessionLocal() as db:
+        operation = db.get(NativeGroupOperation, job_id)
+        retry = db.get(AutomaticRetry, ('native', job_id))
+        assert operation.state == 'queued' and retry.retry_count == 2
+        assert retry.mode == 'reconcile' and retry.next_retry_at is not None
+        assert native_pending_snapshot(db, job_id) == snapshot
+    due('native', job_id)
+    assert run_one(native, account_id=1)
+    assert_native_reconciliation_stopped(native, job_id, snapshot, writes, retries=2)
+    assert len(reads) == 2
+
+
+def test_temporary_network_reads_share_original_five_retry_budget(alice, native, monkeypatch):
+    from app.group_subscription_worker import run_one
+
+    job_id, snapshot = pending_native_propagation(alice, native)
+    writes, reads = list(native.writes), []
+    def read(self):
+        reads.append(True)
+        raise requests.ReadTimeout('synthetic temporary read failure')
+    monkeypatch.setattr(native, 'report_subscriptions', read)
+    for index in range(5):
+        due('native', job_id)
+        assert run_one(native, account_id=1)
+        with SessionLocal() as db:
+            operation = db.get(NativeGroupOperation, job_id)
+            retry = db.get(AutomaticRetry, ('native', job_id))
+            assert native_pending_snapshot(db, job_id) == snapshot
+            assert retry.retry_count == min(index + 2, 5) and retry.mode == 'reconcile'
+            assert operation.state == ('needs_review' if index == 4 else 'queued')
+            assert retry.exhausted is (index == 4)
+        assert native.writes == writes
+    assert_native_reconciliation_stopped(native, job_id, snapshot, writes, retries=5)
+    assert len(reads) == 5
+
+
 @pytest.mark.parametrize('family,phase,mode,allowed', [
     ('sso', 'subscribe', 'reconcile', False),
     ('sso', 'group_membership_pending', 'retry', False),
     ('sso', 'group_membership_pending', 'reconcile', True),
+    ('sso', 'group_entitlement_pending', 'retry', False),
+    ('sso', 'group_entitlement_pending', 'reconcile', True),
     ('native', 'ready', 'reconcile', False),
     ('native', 'pending', 'retry', False),
     ('native', 'pending', 'reconcile', True),
@@ -169,6 +318,22 @@ def test_propagation_retry_requires_original_pending_readonly_step(alice, native
         assert bool(retry and retry.mode == 'reconcile' and retry.retry_count == 1) is allowed
 
 
+@pytest.mark.parametrize('step,mode,allowed', [
+    ('subscribe', 'reconcile', False), ('subscribe_pending', 'retry', False),
+    ('subscribe_pending', 'reconcile', True), ('group_entitlement_pending', 'reconcile', False),
+])
+def test_assignment_visibility_retry_requires_original_pending_readonly_step(native, step, mode, allowed):
+    from app.automatic_retries import schedule_retry
+
+    seed_group(1)
+    with SessionLocal() as db:
+        job = db.get(Subscription, 'group-1-record-0')
+        job.step, job.state = step, 'running'
+        error = AwsFailure('订阅只读核对尚未确认', uncertain=True,
+                           code='subscription_assignment_propagating', retryable=True)
+        assert schedule_retry(db, 'sso', job.id, error, mode=mode) is allowed
+
+
 @pytest.mark.parametrize('route', ['native', 'membership'])
 @pytest.mark.parametrize('converges', [True, False])
 def test_aggregate_delay_reconciles_original_write_with_five_retry_bound(alice, native, route, converges):
@@ -194,6 +359,7 @@ def test_aggregate_delay_reconciles_original_write_with_five_retry_bound(alice, 
         rid = job_id = response.json()['items'][0]['id']
         family, run, baseline = 'sso', sso_one, (1, 1, 1)
         original_writes = list(native.writes)
+    expected_group_lock = job_id if route == 'native' else None
     reads = []
 
     class DelayedAggregate(native):
@@ -232,10 +398,10 @@ def test_aggregate_delay_reconciles_original_write_with_five_retry_bound(alice, 
         operation = db.get(NativeGroupOperation, job_id) if route == 'native' else record
         assert operation.state == 'queued'
         assert (operation.phase if route == 'native' else record.step) == (
-            'pending' if route == 'native' else 'group_membership_pending')
+            'pending' if route == 'native' else 'group_entitlement_pending')
         assert retry.mode == 'reconcile' and retry.retry_count == 1
         assert retry.error_code == 'subscription_observation_propagating'
-        assert db.get(ManagedGroup, 'group-1').active_job_id == job_id
+        assert db.get(ManagedGroup, 'group-1').active_job_id == expected_group_lock
         assert activation.reserved and not activation.counted
         assert not has_confirmed_subscription_access(record, now())
         stable = (record.sso_user_id, record.group_membership_id, record.password_encrypted,
@@ -268,7 +434,7 @@ def test_aggregate_delay_reconciles_original_write_with_five_retry_bound(alice, 
                 assert operation.state == 'queued' and retry.mode == 'reconcile'
                 assert retry.retry_count == index + 2
             assert activation.reserved and not activation.counted
-            assert db.get(ManagedGroup, 'group-1').active_job_id == job_id
+            assert db.get(ManagedGroup, 'group-1').active_job_id == expected_group_lock
             assert not has_confirmed_subscription_access(record, now())
         assert counter() == baseline
     assert len(reads) == (3 if converges else 6)

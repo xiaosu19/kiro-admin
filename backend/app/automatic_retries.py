@@ -42,13 +42,18 @@ def provisioning_stopped(db, family, job):
     return bool(row and row.stop_requested_at)
 
 
-def propagation_reconciliation_allowed(db, family, job_id, mode):
+def propagation_reconciliation_allowed(db, family, job_id, mode, code):
     """Aggregate propagation may resume only an existing read-only step."""
     if mode != "reconcile":
         return False
     if family == "sso":
         job = db.get(Subscription, job_id)
-        return bool(job and job.step == "group_membership_pending")
+        steps = ("subscribe_pending",) if code == "subscription_assignment_propagating" else (
+            "group_membership_pending", "group_entitlement_pending",
+        )
+        return bool(job and job.step in steps)
+    if code != "subscription_observation_propagating":
+        return False
     model = {"native": NativeGroupOperation, "group": GroupJob}.get(family)
     job = db.get(model, job_id) if model else None
     return bool(job and job.phase == "pending")
@@ -57,12 +62,11 @@ def propagation_reconciliation_allowed(db, family, job_id, mode):
 def schedule_retry(db, family, job_id, error, *, mode="retry", config_hash=None, stopped=False):
     failure = classify_failure(error)
     row = db.get(AutomaticRetry, (family, job_id))
-    allowed = failure.transient or (
-        mode == "reconcile" and failure.unknown and row is not None
-        and row.mode == "reconcile" and row.next_retry_at is not None
-    )
-    if (failure.code == "subscription_observation_propagating"
-            and not propagation_reconciliation_allowed(db, family, job_id, mode)):
+    # A pending write permits reads, not assumptions about an unclassified
+    # parser, validation or drift failure. Each retry needs an explicit cause.
+    allowed = failure.transient
+    if (failure.code in ("subscription_observation_propagating", "subscription_assignment_propagating")
+            and not propagation_reconciliation_allowed(db, family, job_id, mode, failure.code)):
         allowed = False
     if stopped or failure.stop or not allowed:
         settle_retry(db, family, job_id)
