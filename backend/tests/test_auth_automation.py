@@ -44,6 +44,13 @@ class Vision:
         return "AB3DE"
 
 
+class RefreshingCaptchaLogin(CaptchaLogin):
+    def challenge_image(self, sealed_state, revision):
+        challenge = decrypt(sealed_state)["challenge"]
+        return SimpleNamespace(content=b"refreshed-image-" + challenge["id"].encode(),
+                               content_type="image/png")
+
+
 def solve(adapter, progress, provider, **kwargs):
     from app.auth_automation import automate_challenge
     return automate_challenge(adapter, progress, provider=provider, **kwargs)
@@ -62,12 +69,85 @@ def test_image_answer_is_submitted_before_verified_event():
     assert decrypt(progress.sealed_state)["captcha_automation"]["status"] == "verified"
 
 
+def test_unchanged_native_image_is_not_recognized_or_submitted_again():
+    adapter, vision = CaptchaLogin(accepts=False), Vision()
+    result = solve(adapter, adapter.start(), vision)
+    automatic = decrypt(result.sealed_state)["captcha_automation"]
+    assert len(vision.calls) == len(adapter.answers) == 1
+    assert result.status == "challenge" and automatic["status"] == "requires_action"
+    assert automatic["reason"] == "captcha_answer_rejected"
+    assert automatic["attempts"] == automatic["submissions"] == 1
+    assert "captcha_verified" not in [event.event for event in adapter.events]
+
+
+def test_new_native_challenge_url_and_ces_do_not_prove_a_new_image():
+    class NewChallengeSameImage(CaptchaLogin):
+        def _advance(self, state, answer):
+            super()._advance(state, answer)
+            self._challenge(state, {"captchaURL": "https://us-east-1.signin.aws/platform/captcha/replacement",
+                                    "captchaCES": "replacement-ces"})
+
+    adapter, vision = NewChallengeSameImage(accepts=False), Vision()
+    result = solve(adapter, adapter.start(), vision)
+    state = decrypt(result.sealed_state)
+    assert state["challenge"]["image_url"].endswith("/replacement")
+    assert len(vision.calls) == len(adapter.answers) == 1
+    assert state["captcha_automation"]["reason"] == "captcha_answer_rejected"
+
+
+def test_pre_upgrade_native_submission_without_image_history_requires_action():
+    adapter, vision = CaptchaLogin(accepts=False), Vision()
+    original = adapter.start()
+    state = decrypt(original.sealed_state)
+    state["captcha_automation"] = {"attempts": 1, "submissions": 1, "status": "recognizing",
+                                   "deadline": NOW + 60}
+    result = solve(adapter, replace(original, sealed_state=encrypt(state)), vision)
+    automatic = decrypt(result.sealed_state)["captcha_automation"]
+    assert not vision.calls and not adapter.answers
+    assert automatic["attempts"] == automatic["submissions"] == 1
+    assert automatic["reason"] == "captcha_answer_rejected"
+
+
+def test_native_image_submission_intent_survives_a_worker_restart():
+    class InterruptedLogin(CaptchaLogin):
+        def advance(self, *args, **kwargs):
+            raise RuntimeError("interrupted after submission intent")
+
+    first, vision = InterruptedLogin(accepts=False), Vision()
+    original = first.start()
+    with pytest.raises(RuntimeError, match="interrupted after submission intent"):
+        solve(first, original, vision)
+    checkpoint = first.events[-1]
+    stored = decrypt(checkpoint.sealed_state)
+    assert stored["captcha_automation"]["submissions"] == 1
+    restarted, new_provider = CaptchaLogin(accepts=False), Vision()
+    result = solve(restarted, replace(original, sealed_state=checkpoint.sealed_state,
+                                     revision=stored["revision"]), new_provider)
+    assert not new_provider.calls and not restarted.answers
+    automatic = decrypt(result.sealed_state)["captcha_automation"]
+    assert automatic["reason"] == "captcha_answer_rejected"
+    assert automatic["attempts"] == automatic["submissions"] == 1
+    assert automatic["deadline"] == stored["captcha_automation"]["deadline"]
+
+
+def test_previously_submitted_native_image_is_not_reused_after_another_image():
+    class CyclingImages(CaptchaLogin):
+        def challenge_image(self, sealed_state, revision):
+            return SimpleNamespace(content=b"first" if len(self.answers) % 2 == 0 else b"second",
+                                   content_type="image/png")
+
+    adapter, vision = CyclingImages(accepts=False), Vision()
+    result = solve(adapter, adapter.start(), vision)
+    assert len(vision.calls) == len(adapter.answers) == 2
+    assert decrypt(result.sealed_state)["captcha_automation"]["reason"] == "captcha_answer_rejected"
+
+
 @pytest.mark.parametrize("limit", [1, 3, 6])
 def test_rejected_answers_stop_at_configured_limit_and_preserve_manual_challenge(monkeypatch, limit):
     from app.config import settings
 
     monkeypatch.setattr(settings, "captcha_max_attempts", limit)
-    adapter, vision = CaptchaLogin(accepts=False), Vision()
+    adapter, vision = RefreshingCaptchaLogin(accepts=False), Vision()
     progress = solve(adapter, adapter.start(), vision)
     assert progress.status == "challenge" and len(adapter.answers) == len(vision.calls) == limit
     assert "captcha_verified" not in [event.event for event in adapter.events]
@@ -80,7 +160,7 @@ def test_rejected_answers_stop_at_configured_limit_and_preserve_manual_challenge
 
 
 def test_native_image_can_succeed_on_first_attempt_plus_five_retries():
-    class SixthAnswerLogin(CaptchaLogin):
+    class SixthAnswerLogin(RefreshingCaptchaLogin):
         def _advance(self, state, answer):
             self.accepts = len(self.answers) == 5
             return super()._advance(state, answer)
@@ -103,7 +183,7 @@ def test_restart_replacement_image_and_new_provider_share_original_six_attempt_b
                 raise RuntimeError("worker interrupted after recognition checkpoint")
             return answer
 
-    first, first_vision = CaptchaLogin(accepts=False), InterruptedVision()
+    first, first_vision = RefreshingCaptchaLogin(accepts=False), InterruptedVision()
     original = first.start()
     with pytest.raises(RuntimeError, match="worker interrupted"):
         solve(first, original, first_vision)
@@ -112,7 +192,7 @@ def test_restart_replacement_image_and_new_provider_share_original_six_attempt_b
     assert stored["captcha_automation"]["attempts"] == 3
     original_deadline = stored["captcha_automation"]["deadline"]
 
-    restarted, new_provider = CaptchaLogin(accepts=False), Vision()
+    restarted, new_provider = RefreshingCaptchaLogin(accepts=False), Vision()
     restarted.clock = lambda: NOW + 20
     previous_challenge = stored["challenge"]["id"]
     restarted._challenge(stored, {"captchaURL": "https://us-east-1.signin.aws/platform/captcha/replacement", "captchaCES": "replacement-ces"})
@@ -134,7 +214,7 @@ def test_restart_replacement_image_and_new_provider_share_original_six_attempt_b
 
 def test_six_attempt_budget_cannot_extend_original_sixty_second_deadline():
     clock = [NOW]
-    adapter = CaptchaLogin(accepts=False)
+    adapter = RefreshingCaptchaLogin(accepts=False)
     adapter.clock = lambda: clock[0]
 
     class SlowVision(Vision):
@@ -201,7 +281,7 @@ def test_missing_personal_provider_has_safe_configuration_reason(monkeypatch):
 
 
 def test_rejected_native_answers_keep_safe_rejection_code_at_limit():
-    adapter = CaptchaLogin(accepts=False)
+    adapter = RefreshingCaptchaLogin(accepts=False)
     progress = solve(adapter, adapter.start(), Vision())
     automatic = decrypt(progress.sealed_state)["captcha_automation"]
     assert automatic["reason"] == "captcha_attempt_limit"

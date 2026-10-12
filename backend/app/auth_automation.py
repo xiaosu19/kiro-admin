@@ -5,6 +5,7 @@ responses decide acceptance; passwords, identity checks and OIDC remain under th
 existing adapter checkpoints and account fence. No browser survives a worker step.
 """
 import fcntl
+import hashlib
 import os
 import time
 from contextlib import contextmanager
@@ -79,6 +80,8 @@ def _solve(adapter, progress, provider, browser_solver):
         "status": "pending",
     })
     automation.setdefault("submissions", 0)
+    known_images = "submitted_image_digests" in automation or not automation["submissions"]
+    automation.setdefault("submitted_image_digests", [])
     # Never reset counters/deadlines on restart or on a replacement challenge.
     budget = min(settings.captcha_total_timeout_seconds, automation["deadline"] - adapter.clock())
     end = time.monotonic() + max(0, budget)
@@ -127,8 +130,16 @@ def _solve(adapter, progress, provider, browser_solver):
         if not challenge or challenge["kind"] not in {"image", "ams"}:
             return pause("captcha_unsupported")
         try:
+            image_digest = None
             if challenge["kind"] == "image":
+                if not known_images:
+                    # A pre-upgrade submission has no image fingerprint. Do not
+                    # assume a new challenge revision proves a refreshed image.
+                    return pause("captcha_answer_rejected")
                 image = adapter.challenge_image(progress.sealed_state, challenge["revision"])
+                image_digest = hashlib.sha256(image.content).hexdigest()
+                if image_digest in automation["submitted_image_digests"]:
+                    return pause("captcha_answer_rejected")
                 before_recognition()
                 value = provider.recognize(image.content, mime_type=image.content_type,
                                            timeout_seconds=remaining())
@@ -145,6 +156,10 @@ def _solve(adapter, progress, provider, browser_solver):
             if remaining() <= 0:
                 return pause("captcha_timeout")
             automation["submissions"] += 1
+            if image_digest is not None:
+                # Persist the exact image's send intent before the AWS request,
+                # including an interruption before its response is checkpointed.
+                automation["submitted_image_digests"].append(image_digest)
             # Official SDKs may complete without an image. Bound those native
             # submissions too, including after a worker restart.
             publish()
