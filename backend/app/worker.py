@@ -232,6 +232,9 @@ def finish(record_id, token, request_id=None):
 def fail(record_id, token, message, uncertain=False, *, error=None, frozen_config=None):
     with SessionLocal() as db:
         r = load(db, record_id, token)
+        # A rejected read says nothing about the membership write already proved
+        # by this durable checkpoint. Never reset its intent or release its quota.
+        uncertain = uncertain or r.step == "group_entitlement_pending"
         can_reconcile = uncertain and r.step != "password_pending"
         if error is not None and frozen_config is not None and (not uncertain or can_reconcile):
             if schedule_retry(db, "sso", record_id, error,
@@ -636,8 +639,8 @@ def _run_one(gateway_factory, account_id, record_id):
             record_id,
             token,
             f"AWS 操作失败：{code}",
-            uncertain=recovering_write or (step in PENDING_STEPS
-                and not classify_failure(exc).proven_unsent),
+            uncertain=recovering_write or membership_accepted or recovering_membership
+            or (step in PENDING_STEPS and not classify_failure(exc).proven_unsent),
             error=exc, frozen_config=frozen_config,
         )
     except Exception as exc:
@@ -648,8 +651,8 @@ def _run_one(gateway_factory, account_id, record_id):
                 record_id,
                 token,
                 f"操作中断（{type(exc).__name__}），请继续处理",
-                uncertain=recovering_write or (step in PENDING_STEPS
-                    and not classify_failure(exc).proven_unsent),
+                uncertain=recovering_write or membership_accepted or recovering_membership
+                or (step in PENDING_STEPS and not classify_failure(exc).proven_unsent),
                 error=exc, frozen_config=frozen_config,
             )
         except Exception:

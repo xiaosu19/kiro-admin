@@ -4,6 +4,8 @@ import uuid
 from datetime import timedelta
 
 import pytest
+import requests
+from botocore.exceptions import ClientError
 from sqlalchemy import select
 
 from app import worker
@@ -83,6 +85,136 @@ def forbid_writes(native, monkeypatch):
     for name in ("create_user", "password", "create_group_membership", "delete_group_membership",
                  "subscribe", "subscribe_group", "cancel_subscription", "cancel_group_subscription"):
         monkeypatch.setattr(native, name, rejected, raising=False)
+
+
+def read_failure(kind, operation):
+    if kind == "connect_timeout":
+        return requests.ConnectTimeout("Synthetic connection timeout")
+    code, status = (("ThrottlingException", 429) if kind == "throttled"
+                    else ("AccessDeniedException", 400))
+    return ClientError({"Error": {"Code": code}, "ResponseMetadata": {
+        "HTTPStatusCode": status, "RetryAttempts": 0,
+    }}, operation)
+
+
+@pytest.mark.parametrize("kind", ["throttled", "access_denied", "connect_timeout"])
+@pytest.mark.parametrize("read", ["membership", "aggregate"])
+def test_first_join_read_failure_preserves_readonly_checkpoint(alice, native, monkeypatch, kind, read):
+    record_id = admit_members(alice, native, monkeypatch)[0]
+    name = "get_group_membership" if read == "membership" else "report_subscriptions"
+    operation = "GetGroupMembershipId" if read == "membership" else "ListUserSubscriptions"
+    original = getattr(native, name)
+
+    def unavailable(self, *args):
+        with SessionLocal() as db:
+            checkpointed = db.get(Subscription, record_id).step == ENTITLEMENT_PENDING
+        if checkpointed:
+            raise read_failure(kind, operation)
+        return original(self, *args)
+
+    monkeypatch.setattr(native, name, unavailable)
+    assert worker.run_one(native, record_id=record_id)
+    with SessionLocal() as db:
+        record, _ = assert_awaiting(db, record_id)
+        assert record.state == ("needs_review" if kind == "access_denied" else "queued")
+        assert db.get(ManagedGroup, "group-1").active_job_id is None
+        retry = db.get(AutomaticRetry, ("sso", record_id))
+        if kind == "access_denied":
+            assert retry is None or retry.next_retry_at is None
+        else:
+            assert retry.mode == "reconcile" and retry.retry_count == 1
+        before = stable_snapshot(db, record_id)
+    assert counter() == (0, 1, 0)
+    membership = native.members.pop(("remote-group-1", "sso-" + record_id))
+    writes = list(native.writes)
+    monkeypatch.setattr(native, name, original)
+    forbid_writes(native, monkeypatch)
+    # A remote deletion after the failed read must stop reconciliation, never
+    # send the already-accepted membership write again.
+    if kind == "access_denied":
+        assert alice.post(f"/api/subscriptions/{record_id}/retry").status_code == 202
+    else:
+        due("sso", record_id)
+    assert worker.run_one(native, record_id=record_id)
+    with SessionLocal() as db:
+        record, _ = assert_awaiting(db, record_id)
+        assert record.state == "needs_review"
+        assert stable_snapshot(db, record_id) == before
+    native.members[("remote-group-1", "sso-" + record_id)] = membership
+    native.effective_rows = None
+    assert alice.post(f"/api/subscriptions/{record_id}/retry").status_code == 202
+    assert worker.run_one(native, record_id=record_id)
+    with SessionLocal() as db:
+        record = db.get(Subscription, record_id)
+        assert record.state == "completed" and record.step == "sso_ready"
+        assert has_confirmed_subscription_access(record, now())
+        assert stable_snapshot(db, record_id)[:-2] == before[:-2]
+    assert counter() == (1, 0, 1) and native.writes == writes
+
+
+@pytest.mark.parametrize("kind", ["throttled", "access_denied", "connect_timeout"])
+def test_accepted_join_read_failure_before_checkpoint_keeps_original_intent(alice, native, monkeypatch, kind):
+    record_id = admit_members(alice, native, monkeypatch)[0]
+    original = native.get_group_membership
+
+    def unavailable(self, gid, uid):
+        if (gid, uid) in self.members:
+            raise read_failure(kind, "GetGroupMembershipId")
+        return original(self, gid, uid)
+
+    monkeypatch.setattr(native, "get_group_membership", unavailable)
+    assert worker.run_one(native, record_id=record_id)
+    with SessionLocal() as db:
+        record = db.get(Subscription, record_id)
+        activation = db.scalar(select(GroupMemberActivation).where(GroupMemberActivation.record_id == record_id))
+        assert record.step == "group_membership_pending"
+        assert record.state == ("needs_review" if kind == "access_denied" else "queued")
+        assert record.worker_config_hash and activation.reserved and not activation.counted
+        assert db.get(ManagedGroup, "group-1").active_job_id == record_id
+        retry = db.get(AutomaticRetry, ("sso", record_id))
+        if kind == "access_denied":
+            assert retry is None or retry.next_retry_at is None
+        else:
+            assert retry.mode == "reconcile"
+    assert ("remote-group-1", "sso-" + record_id) in native.members
+    assert counter() == (0, 1, 0)
+    writes = list(native.writes)
+    monkeypatch.setattr(native, "get_group_membership", original)
+    forbid_writes(native, monkeypatch)
+    native.effective_rows = None
+    if kind == "access_denied":
+        assert alice.post(f"/api/subscriptions/{record_id}/retry").status_code == 202
+    else:
+        due("sso", record_id)
+    assert worker.run_one(native, record_id=record_id)
+    with SessionLocal() as db:
+        record = db.get(Subscription, record_id)
+        assert record.state == "completed" and has_confirmed_subscription_access(record, now())
+    assert counter() == (1, 0, 1) and native.writes == writes
+
+
+@pytest.mark.parametrize("kind", ["throttled", "access_denied"])
+def test_failure_handler_cannot_downgrade_a_durable_entitlement_checkpoint(alice, native, monkeypatch, kind):
+    record_id = admit_members(alice, native, monkeypatch)[0]
+    assert worker.run_one(native, record_id=record_id)
+    with SessionLocal() as db:
+        assert_awaiting(db, record_id)
+        before = stable_snapshot(db, record_id)
+    due("sso", record_id)
+    _, token = worker.claim(record_id=record_id)
+    worker.fail(record_id, token, "Synthetic read failure", uncertain=False,
+                error=read_failure(kind, "ListUserSubscriptions"), frozen_config=before[6])
+    with SessionLocal() as db:
+        record, _ = assert_awaiting(db, record_id)
+        assert record.state == ("needs_review" if kind == "access_denied" else "queued")
+        assert stable_snapshot(db, record_id) == before
+        assert db.get(ManagedGroup, "group-1").active_job_id is None
+        retry = db.get(AutomaticRetry, ("sso", record_id))
+        if kind == "access_denied":
+            assert retry.next_retry_at is None
+        else:
+            assert retry.mode == "reconcile"
+    assert counter() == (0, 1, 0)
 
 
 def test_confirmed_join_releases_only_the_group_write_lock(alice, native, monkeypatch):
