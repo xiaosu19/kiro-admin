@@ -11,7 +11,8 @@ def resume_needed(row, current):
     if row.state != 'stopped' or not row.stop_requested_at:
         return False
     export_json = json.loads(row.exports)['json']
-    return any(i.state == 'stopped' or (
+    from .provisioning_coordinator import members_first
+    return any(i.state == 'stopped' or (i.state == 'prepared' and members_first(row)) or (
         i.state == 'completed' and export_json and not i.auth_batch_id
     ) for i in current)
 
@@ -19,7 +20,7 @@ def resume_needed(row, current):
 def resume_stopped(db, row):
     from .batches import update_batch_item
     from .group_subscription_state import member_activation, reserve_join
-    from .provisioning_coordinator import active_group, guard, items, record_guard, transition
+    from .provisioning_coordinator import active_group, guard, items, members_first, record_guard, transition
 
     current = items(db, row)
     if not resume_needed(row, current):
@@ -37,11 +38,25 @@ def resume_stopped(db, row):
         raise HTTPException(409, 'GROUP 开通尚未核对完成，请先核对原任务')
     if op and op.state == 'cancelled' and (op.phase == 'pending' or op.write_requested_at):
         raise HTTPException(409, '已发送的 GROUP 开通不能直接恢复，请先核对')
-    if row.phase == 'sso' or op and op.state == 'completed':
+    if (row.phase == 'sso' and not members_first(row)) or op and op.state == 'completed':
         active_group(db, row)
+    if op and op.state in ('failed', 'cancelled'):
+        # A settled refusal has no active grant. Clear its link before checking
+        # already prepared members; the caller rolls this back on any refusal.
+        row.native_request_key = f'numbered:{row.id}:resume:{op.id[:8]}'
+        row.native_operation_id = row.native_grant_id = None
     records = []
     for item in current:
         if item.state == 'completed':
+            continue
+        if item.state == 'prepared' and members_first(row):
+            record = db.get(Subscription, item.record_id)
+            if not record or record.state != 'completed' or record.active_operation_id or record.sso_deleted_at:
+                raise HTTPException(409, '已准备成员的身份或状态已变化，请先核对')
+            try:
+                record_guard(db, record, allow_stopped=True)
+            except AwsFailure as exc:
+                raise HTTPException(409, str(exc)) from None
             continue
         if item.state != 'stopped':
             raise HTTPException(409, '尚有未完成核对的成员，请先核对原任务')
@@ -63,9 +78,6 @@ def resume_stopped(db, row):
         job.state, job.error, job.finished_at = 'queued', None, None
         job.lease_token = job.lease_until = None
         group.state, group.error, group.active_job_id = 'creating', None, job.id
-    if op and op.state in ('failed', 'cancelled'):
-        row.native_request_key = f'numbered:{row.id}:resume:{op.id[:8]}'
-        row.native_operation_id = row.native_grant_id = None
     for item, record in records:
         if record.step == 'group_membership_pending':
             record.step = 'group_membership'

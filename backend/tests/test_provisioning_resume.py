@@ -8,8 +8,8 @@ from sqlalchemy import func, select
 
 from app import models, worker
 from app.database import SessionLocal
-from test_provisioning_admission import admit, ready, remote  # noqa: F401
-from test_provisioning_coordinator import Gateway, body, coordinator_to_child, drive, fetch, gateway  # noqa: F401
+from test_provisioning_admission import ready, remote  # noqa: F401
+from test_provisioning_coordinator import Gateway, admit, body, coordinator_to_child, drive, fetch, gateway  # noqa: F401
 
 
 def action(client, parent, kind, key):

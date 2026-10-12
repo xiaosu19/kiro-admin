@@ -31,6 +31,11 @@ def completed_parent(client, *, accounts=5, quantity=100):
     assert parent_response.status_code == 202, parent_response.text
     parent = parent_response.json()
     materialize(parent)
+    with SessionLocal() as db:
+        for child in parent['accounts']:
+            for item in child['items']:
+                db.get(models.Subscription, item['record_id']).subscription_status = 'active'
+        db.commit()
     for child in parent['accounts']:
         response = client.post('/api/auth-batches', json={'kind': 'json_export', 'record_ids': [item['record_id'] for item in child['items']], 'request_key': str(uuid.uuid4())})
         assert response.status_code == 202, response.text

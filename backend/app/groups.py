@@ -151,6 +151,8 @@ def member_counts(db, group, members, schedules=None):
             for record in members
         ),
         "active": sum(bool(r.sso_user_id) and not r.sso_deleted_at for r in members),
+        "unconfirmed": sum(not r.sso_user_id and not r.sso_deleted_at for r in members),
+        "joined": sum(bool(r.sso_user_id and r.group_membership_id) and not r.sso_deleted_at for r in members),
         "subscribed": sum(r.counted for r in members),
         "deleted": sum(bool(r.sso_deleted_at) for r in members),
         "cancelled": sum(bool(r.cancelled_at) for r in members),

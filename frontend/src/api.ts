@@ -706,7 +706,7 @@ export interface GroupActivation {
   write_requested_at: string | null; activated_at: string | null; cancelled_at: string | null;
   error: string | null; created_at: string;
 }
-export interface GroupCounts { total: number; eligible: number; active: number; subscribed: number; deleted: number; cancelled: number }
+export interface GroupCounts { total: number; eligible: number; active: number; subscribed: number; deleted: number; cancelled: number; unconfirmed?: number; joined?: number }
 export interface GroupDetail extends GroupItem {
   members: RecordItem[];
   counts: GroupCounts;

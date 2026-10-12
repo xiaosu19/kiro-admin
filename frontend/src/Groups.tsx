@@ -33,6 +33,7 @@ import {
 import {
   policyPreviewCurrent,
   runRecoverableSubmission,
+  groupMemberStatus,
 } from "./groupsLogic";
 import { useGroupAccess, useGroupJobRecovery, useRemote, type GroupAccess } from "./groupRequests";
 import { PasswordBatches } from "./PasswordBatches";
@@ -471,7 +472,8 @@ export function GroupDirectoryTable({ groups, isAdmin, ownerName, accountName, s
                         <AwsGroupValue entry={observations[g.id]} field="members" />
                         {g.counts ? <>
                           <small>本地成员记录 {g.counts.total} 条</small>
-                          <small>现存 {g.counts.active} 人 · 可订阅 {g.counts.eligible} 人</small>
+                          <small>本地已创建 SSO {g.counts.active} 人 · 可订阅 {g.counts.eligible} 人</small>
+                          {g.counts.unconfirmed !== undefined && <small>尚未确认创建 {g.counts.unconfirmed} 人 · 本地确认加组 {g.counts.joined} 人</small>}
                           <small>累计已订阅 {g.counts.subscribed} 人</small>
                         </> : <span className="muted">统计暂不可用</span>}
                       </td>
@@ -895,11 +897,13 @@ function GroupDetails({
         <h2>本地成员记录与停止规则</h2>
         <div className="group-counts">
           <span>
-            全部记录 <strong>{group.counts.total}</strong>
+            本地记录（含创建任务） <strong>{group.counts.total}</strong>
           </span>
           <span>
-            现存 SSO <strong>{group.counts.active}</strong>
+            本地已创建 SSO <strong>{group.counts.active}</strong>
           </span>
+          {group.counts.unconfirmed !== undefined && <span>尚未确认创建 <strong>{group.counts.unconfirmed}</strong></span>}
+          {group.counts.joined !== undefined && <span>本地确认加组 <strong>{group.counts.joined}</strong></span>}
           <span>
             可开通订阅 <strong>{group.counts.eligible}</strong>
           </span>
@@ -934,7 +938,7 @@ function GroupDetails({
         <div className="group-section-heading">
           <div>
             <h2>成员</h2>
-            <p className="muted">本地成员记录保留原订阅与操作历史；AWS 实际成员以本次查询为准。</p>
+            <p className="muted">包括计划创建、失败和历史记录，不代表这些用户都已存在。AWS 实际成员以上方“刷新 AWS 状态”的查询为准；已创建用户可在 SSO 目录查看，未完成任务可在原批次恢复。</p>
           </div>
           <div className="proxy-buttons">
             {(group.owner_id === user.id || user.role === "admin") && !group.deleted_at && ready &&
@@ -981,13 +985,8 @@ function GroupDetails({
                     <StopRuleSource record={r} group={group} />
                   </td>
                   <td>
-                    {r.sso_deleted_at
-                      ? "已删除 · 历史保留"
-                      : r.operation_pending || r.operation
-                        ? "有任务待处理"
-                        : r.group_membership_id
-                          ? "已加入 AWS 分组"
-                          : "等待加入 AWS 分组"}
+                    {groupMemberStatus(r)}
+                    {r.error && <small className="muted">{r.error}</small>}
                   </td>
                   <td>
                     <div className="row-actions">

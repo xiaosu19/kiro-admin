@@ -12,6 +12,7 @@ const {
   createSsoIntent,
   runSsoCreation,
   selectionFromPreview,
+  groupMemberStatus,
 } = await loadSource("groupsLogic");
 
 const group = {
@@ -46,6 +47,20 @@ const record = {
     individual_override: false,
   },
 };
+
+test("group status distinguishes planned SSO records from confirmed memberships", () => {
+  assert.equal(typeof groupMemberStatus, "function");
+  assert.equal(groupMemberStatus({ ...record, sso_user_id: null, group_membership_id: null, state: "queued", step: "create_user" }), "SSO 尚未创建");
+  assert.equal(groupMemberStatus({ ...record, sso_user_id: null, group_membership_id: null, state: "failed", step: "create_user" }), "SSO 创建失败，尚未确认用户");
+  assert.equal(groupMemberStatus({ ...record, sso_user_id: null, group_membership_id: null, state: "needs_review", step: "create_user_pending" }), "SSO 创建结果待核对");
+  assert.equal(groupMemberStatus({ ...record, group_membership_id: null, state: "failed", step: "subscribe" }), "SSO 已创建，加组失败");
+  assert.equal(groupMemberStatus({ ...record, group_membership_id: null, state: "failed", step: "group_membership_pending" }), "SSO 已创建，加组失败");
+  assert.equal(groupMemberStatus({ ...record, group_membership_id: null, state: "needs_review", step: "group_membership_pending" }), "SSO 已创建，加组结果待核对");
+  assert.equal(groupMemberStatus({ ...record, state: "needs_review", step: "group_membership_pending" }), "已记录加组，授权待核对");
+  assert.equal(groupMemberStatus(record), "已确认加入 AWS 分组");
+  assert.equal(groupMemberStatus({ ...record, operation_pending: true }), "已确认加组 · 有任务待处理");
+  assert.equal(groupMemberStatus({ ...record, sso_deleted_at: "2026-10-12" }), "已删除 · 历史保留");
+});
 
 test("SSO creation offers only current creator and account groups that can admit members", () => {
   assert.deepEqual(

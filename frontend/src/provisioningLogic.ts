@@ -47,7 +47,7 @@ export interface ProvisioningBatch {
 }
 export const provisioningStates: Record<string, string> = {
   queued: '等待处理', running: '正在处理', completed: '开通完成', paused: '已暂停', needs_review: '待核对',
-  failed: '处理失败', stopped: '已停止', stopping: '正在停止', partial: '部分完成', uncertain: '结果待确认',
+  failed: '处理失败', stopped: '已停止', stopping: '正在停止', partial: '部分完成', uncertain: '结果待确认', prepared: '已创建并加组',
 };
 export const provisioningPhases: Record<string, string> = {
   admitted: '已受理', group_create: '创建分组', group_open: '开通分组', sso: '创建用户与加入分组',

@@ -2215,7 +2215,8 @@ def test_directory_counts_match_detail_preview_and_keep_scoped_members_private(
         records[10].aws_account_id = 2
         db.commit()
 
-    expected = {"total": 9, "eligible": 1, "active": 7, "subscribed": 3, "deleted": 1, "cancelled": 1}
+    expected = {"total": 9, "eligible": 1, "active": 7, "subscribed": 3, "deleted": 1, "cancelled": 1,
+                "unconfirmed": 1, "joined": 6}
     alice_rows = alice.get("/api/groups").json()
     assert len(alice_rows) == 1
     assert alice_rows[0]["counts"] == expected

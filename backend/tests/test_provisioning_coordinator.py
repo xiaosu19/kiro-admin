@@ -10,7 +10,25 @@ from app import aws, models, worker
 from app.database import SessionLocal
 from app.security import encrypt
 from test_native_groups import NativeGateway
-from test_provisioning_admission import admit, intent, ready, remote
+from test_provisioning_admission import admit as admit_current, intent, ready, remote
+
+
+def admit(*args, **kwargs):
+    """Simulate a persisted pre-upgrade intent for the legacy recovery suite.
+
+    Current admission/order is exercised in test_provisioning_members_first.
+    These cases must continue covering old batches without a sequence marker.
+    """
+    response = admit_current(*args, **kwargs)
+    if response.status_code == 202:
+        with SessionLocal() as db:
+            for child in response.json()['accounts']:
+                row = db.get(models.ProvisioningAccountBatch, child['id'])
+                snapshot = json.loads(row.snapshot)
+                snapshot.pop('subscription_order', None)
+                row.snapshot = json.dumps(snapshot)
+            db.commit()
+    return response
 
 
 class Gateway(NativeGateway):
@@ -106,7 +124,7 @@ def drive(parent, client, factory=Gateway, predicate=None, timeout=10):
         dispatcher.close(wait=True)
 
 
-def test_numbered_new_group_exact_identities_order_and_quota(alice, gateway):
+def test_legacy_numbered_group_exact_identities_order_and_quota(alice, gateway):
     parent = admit(alice, body(quantity=2, stop_policy={'mode': 'days', 'days': 3})).json()
     with SessionLocal() as db:
         frozen = db.get(models.ProvisioningAccountBatch, parent['accounts'][0]['id']).snapshot

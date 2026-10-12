@@ -11,6 +11,7 @@ from datetime import timedelta
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy import select
 from app.aws import AwsGateway as RealAwsGateway
 from app.database import SessionLocal
 from app.models import AwsAccount, Subscription, now
@@ -217,8 +218,7 @@ def test_creation_service_caps_same_account_at_two_running_users():
 def test_native_group_credentials_overlap_but_member_activation_remains_serial(alice, numbered_gateway):
     from app import worker
     from app.models import ManagedGroup, PlanCounter
-    from test_provisioning_admission import admit
-    from test_provisioning_coordinator import body, coordinator_to_child
+    from test_provisioning_coordinator import admit, body, coordinator_to_child
 
     parent = admit(alice, body(quantity=2)).json()
     coordinator_to_child(parent, "sso")
@@ -269,13 +269,16 @@ def test_numbered_json_exports_queue_all_users_before_any_browser_runs(alice, nu
     from app.models import AuthJob, ProvisioningAccountBatch, ProvisioningItem
     from app.provisioning_coordinator import run_one as coordinate
     from test_provisioning_admission import admit, intent
-    from test_provisioning_coordinator import coordinator_to_child
+    from test_provisioning_coordinator import coordinator_to_child, drive
 
     parent = admit(alice, intent(quantity=2)).json()
     cid = coordinator_to_child(parent, "sso")
     assert worker.run_one(numbered_gateway, account_id=1)
     assert worker.run_one(numbered_gateway, account_id=1)
     assert coordinate(account_id=1)
+    with SessionLocal() as db:
+        assert not list(db.scalars(select(AuthJob))), 'prepared users cannot authenticate before subscription'
+    assert drive(parent, alice)['state'] == 'completed'
     with SessionLocal() as db:
         items = [db.get(ProvisioningItem, item["record_id"]) for item in parent["accounts"][0]["items"]]
         assert all(item.auth_job_id and item.auth_batch_id for item in items)
@@ -425,15 +428,16 @@ def test_late_success_updates_confirmed_item_after_sibling_pauses_parent(alice, 
     assert not coordinate(account_id=1), "A late fact must not restart paused admission"
     final = fetch(alice, parent)
     assert final["state"] == "needs_review"
-    assert [item["state"] for item in final["accounts"][0]["items"]] == ["failed", "completed"]
+    assert [item["state"] for item in final["accounts"][0]["items"]] == ["failed", "prepared"]
     with SessionLocal() as db:
         item, row = db.get(ProvisioningItem, late), db.get(ProvisioningAccountBatch, cid)
         activation = db.scalar(select(GroupMemberActivation).where(
             GroupMemberActivation.record_id == late,
             GroupMemberActivation.grant_id == row.native_grant_id,
             GroupMemberActivation.counted.is_(True)))
-        assert activation and item.finished_at == activation.activated_at
-    assert sum(event[0] == "GROUP" for event in numbered_gateway.events) == 1
+        assert activation is None and item.finished_at is None
+        assert not item.auth_job_id and not db.get(Subscription, late).counted
+    assert not any(event[0] == "GROUP" for event in numbered_gateway.events)
 
 
 @pytest.mark.parametrize("stage", ["create_user", "membership"])

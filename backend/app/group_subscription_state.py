@@ -400,7 +400,7 @@ def join_context(db, record, group, *, recovering=False, creation_reset=False,
             sibling_activation = member_activation(db, sibling.id) if sibling else None
             lock_valid = lock_valid or bool(
                 sibling and sibling.group_id == group.id
-                and sibling.state in ("queued", "running") and sibling_activation
+                and sibling.state in ("queued", "running", "needs_review") and sibling_activation
                 and sibling_activation.operation_id == sibling.id
                 and sibling_activation.grant_id == grant.id
             )
@@ -417,10 +417,11 @@ def join_context(db, record, group, *, recovering=False, creation_reset=False,
         or (group.state != "ready" and (preparing_credentials or creation_reset))
         or not group.remote_id
         or record.sso_deleted_at
-        or not lock_valid
         or (record.id if creation_reset else (record.active_operation_id or record.id)) != activation.operation_id
     ):
         raise AwsFailure("加入原生订阅分组的预占、归属、锁或配置已变化")
+    if not lock_valid:
+        raise AwsFailure("分组有未完成或待核对的成员授权，请先核对该成员后继续加入")
     if not recovering:
         owner, actor = db.get(User, grant.owner_id), db.get(User, activation.actor_id)
         plan = db.get(Plan, grant.plan_id)

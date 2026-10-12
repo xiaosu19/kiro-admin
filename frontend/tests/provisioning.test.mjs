@@ -147,6 +147,30 @@ test('stopped batch resume is explicit, cancellable and submits only the scoped 
   host.unmount();
 });
 
+test('failed-member retry stays scoped to the account and is hidden while running', async () => {
+  const { AccountProgress } = await loadSource('Provisioning');
+  const calls = [];
+  const row = { id: 'failed-child', batch_number: 'a-01', account_name: 'AWS A', quantity: 2,
+    group: { id: 'g', name: 'a-01' }, state: 'needs_review', phase: 'sso',
+    allowed_actions: ['recheck', 'retry_failed', 'stop'], exports: { csv: true, txt: true, json: false },
+    stop_policy: { mode: 'none' }, items: [{ record_id: 'one', state: 'prepared', internal_id: 'a-01-01', username: 'a-01-01' },
+      { record_id: 'two', state: 'failed', internal_id: 'a-01-02', username: 'a-01-02' }] };
+  const props = { row, batch: { id: 'parent', actor_id: 2 }, user: { id: 2 }, disabled: false,
+    run: (...args) => calls.push(args), download() {}, onAuth() {} };
+  const host = mountHook(AccountProgress, props);
+  const retry = () => find(host.current, node => node.type === 'button' && node.props.children === '重试失败项');
+  assert.ok(retry());
+  retry().props.onClick();
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], '/provisioning-batches/parent/accounts/failed-child/retry_failed');
+  assert.ok(calls[0][1].request_key.length >= 16);
+  host.render({ ...props, disabled: true });
+  assert.equal(retry().props.disabled, true);
+  host.render({ ...props, row: { ...row, state: 'running', allowed_actions: ['stop'] } });
+  assert.equal(retry(), null);
+  host.unmount();
+});
+
 test('provisioning detail clears private rows and actions after authoritative forbidden polling', async t => {
   const ui = await loadSource('Provisioning'), { useGroupAccess } = await loadSource('groupRequests');
   assert.equal(typeof ui.ProvisioningBatchDetail, 'function');

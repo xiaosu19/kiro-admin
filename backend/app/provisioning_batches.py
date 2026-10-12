@@ -162,8 +162,8 @@ def compatible_group(db, actor, account, row, plan):
     if operations:
         raise HTTPException(409, "原生分组仍有未完成或待核对任务")
     records = group_members(db, group)
-    if not grant and len(records) > 100:
-        raise HTTPException(409, "原生分组开通最多处理 100 名已有成员")
+    if not grant and len(records) + row.quantity > 100:
+        raise HTTPException(409, "未订阅分组的已有成员与新增人数合计最多 100 人，请调整人数或使用新分组")
     policy = row.stop_policy or group_policy(group)
     deadline(policy, grant.activated_at if grant else None)
     policy_change, changed_member_ids = None, set()
@@ -245,7 +245,8 @@ def prepare(db, actor, body):
             "grant": fields(grant), "members": members,
             "stop_policy": policy.model_dump(mode="json"), "policy_change": policy_change,
             "needed_count": row.quantity + (len(members) if not grant else 0),
-            "exports": row.exports.model_dump(by_alias=True), "group_mode": row.group.mode}
+            "exports": row.exports.model_dump(by_alias=True), "group_mode": row.group.mode,
+            "subscription_order": "grant_first" if grant else "members_first"}
         snapshots.append(snapshot)
         frozen = SimpleNamespace(**{key: getattr(account, key) for key in aws_reports.ACCOUNT_FIELDS},
                                  _proxy_selection=selection)
@@ -494,7 +495,8 @@ def batch_view(db, batch, detail=True, actor=None):
         from .provisioning_resume import resume_needed
         row['allowed_actions'] = allowed_actions(child, export_retry=private_auth and any(
             i.export_error for i in grouped_items.get(child.id, [])),
-            resumable=resume_needed(child, grouped_items.get(child.id, [])))
+            resumable=resume_needed(child, grouped_items.get(child.id, [])),
+            failed_items=any(i.state == 'failed' for i in grouped_items.get(child.id, [])))
         grant = grants.get(child.native_grant_id)
         row['group_subscription_state'] = grant.state if grant else None
         row['activated_at'] = grant.activated_at if grant else None
@@ -662,7 +664,7 @@ class ActionInput(BaseModel):
 
 
 @router.post("/{batch_id}/accounts/{account_batch_id}/{action}", status_code=202)
-def account_action(batch_id: str, account_batch_id: str, action: Literal['stop', 'retry', 'recheck', 'retry_export', 'resume'],
+def account_action(batch_id: str, account_batch_id: str, action: Literal['stop', 'retry', 'retry_failed', 'recheck', 'retry_export', 'resume'],
                    body: ActionInput, request: Request, response: Response,
                    actor: User = Depends(get_user), db: Session = Depends(get_db)):
     from .models import ProvisioningAction
@@ -685,7 +687,8 @@ def account_action(batch_id: str, account_batch_id: str, action: Literal['stop',
     if action == 'retry_export' and actor.id != batch.actor_id:
         raise HTTPException(404, '认证批次不存在')
     if action not in allowed_actions(row, export_retry=export_retry,
-                                    resumable=resume_needed(row, items(db, row))):
+                                    resumable=resume_needed(row, items(db, row)),
+                                    failed_items=any(i.state == 'failed' for i in items(db, row))):
         raise HTTPException(409, '当前状态不允许此操作，请刷新批次')
     if action == 'stop':
         row.stop_requested_at = now()
@@ -693,14 +696,46 @@ def account_action(batch_id: str, account_batch_id: str, action: Literal['stop',
         stop_unsent(db, row)
     elif action == 'resume':
         resume_stopped(db, row)
+    elif action == 'retry_failed':
+        from .subscription_recovery import queue_retry
+        from .batches import update_batch_item
+        guard(db, row)
+        for item in items(db, row):
+            record = db.get(Subscription, item.record_id)
+            if item.state == 'failed' and record:
+                queue_retry(db, record, actor)
+                update_batch_item(db, record, 'queued')
+                item.state, item.error, item.updated_at, item.finished_at = 'queued', None, now(), None
+        transition(row, row.phase)
     elif action == 'retry_export':
         guard(db, row)
         for item in items(db, row):
             item.export_error = None
         transition(row, 'sso')
     else:
-        # Recheck only wakes the coordinator. Child recovery remains an explicit
-        # action on its existing endpoint, with the original write phase intact.
+        if action == 'recheck':
+            # Only pending child writes are reawakened, preserving their phase.
+            # A native worker with a pending intent performs read-only queries.
+            guard(db, row, recovering=True)
+            from .subscription_recovery import queue_retry
+            from .worker import PENDING_STEPS
+            from .batches import update_batch_item
+            from .models import GroupJob
+            op = db.get(NativeGroupOperation, row.native_operation_id) if row.native_operation_id else None
+            group = db.get(ManagedGroup, row.group_id) if row.group_id else None
+            job = db.get(GroupJob, row.group_job_id) if row.group_job_id else None
+            if job and job.state == 'needs_review' and job.phase == 'pending' and group.active_job_id == job.id:
+                job.state, job.error = 'queued', None
+                group.state, group.error = 'updating', None
+            if op and op.state == 'needs_review' and op.phase == 'pending' and group.active_job_id == op.id:
+                op.state, op.error = 'queued', None
+            for item in items(db, row):
+                record = db.get(Subscription, item.record_id)
+                if (record and record.state == 'needs_review' and record.step in PENDING_STEPS
+                        and record.step != 'password_pending'):
+                    queue_retry(db, record, actor)
+                    update_batch_item(db, record, 'queued')
+                    item.state, item.error = 'queued', None
         if action == 'retry':
             guard(db, row)
             if row.native_operation_id:

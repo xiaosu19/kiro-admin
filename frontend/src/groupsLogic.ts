@@ -7,6 +7,23 @@ import type {
 } from "./api";
 import { nativeAccess } from "./nativeSubscriptionsLogic";
 
+export function groupMemberStatus(record: RecordItem) {
+  if (record.sso_deleted_at) return "已删除 · 历史保留";
+  if (!record.sso_user_id) {
+    if (record.state === "needs_review" || record.step === "create_user_pending")
+      return "SSO 创建结果待核对";
+    return record.state === "failed" ? "SSO 创建失败，尚未确认用户" : "SSO 尚未创建";
+  }
+  if (record.group_membership_id) {
+    if (record.state === "needs_review" && record.step === "group_membership_pending")
+      return "已记录加组，授权待核对";
+    return record.operation_pending || record.operation ? "已确认加组 · 有任务待处理" : "已确认加入 AWS 分组";
+  }
+  if (record.state === "failed") return "SSO 已创建，加组失败";
+  if (record.step === "group_membership_pending") return "SSO 已创建，加组结果待核对";
+  return record.state === "needs_review" ? "SSO 已创建，待核对" : "SSO 已创建，等待加组";
+}
+
 export function ownedCreationGroups(
   groups: GroupItem[],
   ownerId: number,

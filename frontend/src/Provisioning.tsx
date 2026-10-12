@@ -13,7 +13,7 @@ import { accountLabel, applySharedProvisioningSettings, completedLegacyRecovery,
   type ProvisioningBody, type ProvisioningPreview, type Recovery } from "./provisioningLogic";
 import { useProvisioningAdmission, useProvisioningPreview, useProvisioningReport } from "./provisioningRequests";
 
-const actionLabels: Record<string, string> = { stop: '停止后续开通', retry: '继续本账号批次', recheck: '核对本账号进度', retry_export: '重新受理 JSON 转换', resume: '恢复未完成项' };
+const actionLabels: Record<string, string> = { stop: '停止后续开通', retry: '继续本账号批次', retry_failed: '重试失败项', recheck: '核对本账号进度', retry_export: '重新受理 JSON 转换', resume: '恢复未完成项' };
 const recoveryLabels: Record<string, string> = { group_retry: '恢复分组任务', native_recheck: '核对 GROUP 开通', sso_retry: '恢复此用户', reset_password: '重新生成一次性密码' };
 type Download = { path: string; method: 'GET' | 'POST'; body?: unknown };
 function ErrorBox({ text }: { text?: string }) { return text ? <p className="error" role="alert">{text}</p> : null; }

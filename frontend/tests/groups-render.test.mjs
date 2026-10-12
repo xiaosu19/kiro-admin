@@ -140,7 +140,7 @@ test("group directory displays membership, eligible and cumulative subscribed co
   }));
   const text = html.replace(/<[^>]+>/g, "");
   assert.match(text, /成员记录 9 条/);
-  assert.match(text, /现存 7 人/);
+  assert.match(text, /本地已创建 SSO 7 人/);
   assert.match(text, /可订阅 1 人/);
   assert.match(text, /累计已订阅 3 人/);
 });

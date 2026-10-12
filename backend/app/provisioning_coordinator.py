@@ -23,6 +23,11 @@ from .proxies import ProxyUnavailable, proxy_selection
 RUNNABLE = ('queued', 'running', 'stopping')
 
 
+def members_first(row):
+    """Persisted pre-upgrade batches retain their original paid-write order."""
+    return json.loads(row.snapshot).get('subscription_order') == 'members_first'
+
+
 def items(db, row):
     return list(db.scalars(select(ProvisioningItem).where(
         ProvisioningItem.account_batch_id == row.id).order_by(ProvisioningItem.position)))
@@ -70,7 +75,10 @@ def record_guard(db, record, *, recovering=False, allow_stopped=False):
             if not recovering:
                 from .group_subscription_state import live_grant
                 grant = live_grant(db, row.group_id)
-                if (not grant or grant.id != row.native_grant_id or grant.state != 'active'
+                preparing = members_first(row) and row.native_operation_id is None
+                if preparing and grant:
+                    raise HTTPException(409, '分组在成员准备完成前出现新的订阅授权，请先核对')
+                if not preparing and (not grant or grant.id != row.native_grant_id or grant.state != 'active'
                         or grant.plan_id != row.plan_id or grant.subscription_type != row.subscription_type
                         or (grant.stop_at and grant.stop_at <= now())):
                     raise HTTPException(409, '原编号批次的 GROUP 授权或套餐已变化，不能加入新的授权；请核对原批次')
@@ -140,6 +148,8 @@ def sync_items(db, row):
         if activation:
             item.state, item.phase, item.error = 'completed', 'group_access', None
             item.finished_at = item.finished_at or activation.activated_at
+        elif record.state == 'completed' and members_first(row) and not record.counted:
+            item.state, item.phase, item.error = 'prepared', 'group_access', None
         elif record.state == 'completed':
             item.state, item.phase = 'needs_review', 'group_access'
             item.error = '未确认原编号批次的 GROUP 成员授权，请核对原授权历史'
@@ -180,7 +190,7 @@ def stop_unsent(db, row):
                 quota_finish(db, activation, False)
             release_locks(db, op, db.get(ManagedGroup, op.group_id))
     for item in items(db, row):
-        if item.state == 'completed':
+        if item.state in ('completed', 'prepared'):
             continue
         record = db.get(Subscription, item.record_id)
         if record and (record.state == 'running' or
@@ -277,7 +287,7 @@ def _advance(db, row):
     if row.stop_requested_at:
         stop_unsent(db, row)
         return
-    if row.phase == 'sso' and all(i.state == 'completed' for i in items(db, row)):
+    if row.phase in ('sso', 'group_open') and all(i.state == 'completed' for i in items(db, row)):
         admit_exports(db, row)
         return
     actor, account = guard(db, row)
@@ -312,7 +322,7 @@ def _advance(db, row):
                 apply_group_policy(db, group, GroupPolicyInput(policy=StopPolicy.model_validate(json.loads(row.stop_policy)),
                     expected_revision=revision, overwrite_individual=intent['overwrite_individual']), actor)
             row.policy_applied_revision = group.policy_revision
-        transition(row, 'group_open')
+        transition(row, 'sso' if members_first(row) else 'group_open')
         return
     if row.phase == 'group_open':
         from .group_subscriptions import SubscribeGroupsInput, admit_prepared_groups, batch_replay, prepare
@@ -329,7 +339,10 @@ def _advance(db, row):
                 prepared = prepare(db, actor, [row.group_id], 'subscribe', 'IMMEDIATE')
                 # Existing member identities must still match immediately before
                 # admission; the native worker then checks the full remote set.
-                if {r.id for r in prepared[0][2]} != {m['id'] for m in snap['members']}:
+                expected = {m['id'] for m in snap['members']}
+                if members_first(row):
+                    expected.update(i.record_id for i in items(db, row))
+                if {r.id for r in prepared[0][2]} != expected:
                     raise HTTPException(409, '原分组已有成员变化，开通未发送')
                 old = admit_prepared_groups(db, actor, body, prepared, fingerprint, 'subscribe')
                 db.flush()
@@ -340,7 +353,13 @@ def _advance(db, row):
         op = db.get(NativeGroupOperation, row.native_operation_id)
         if op.state == 'completed':
             active_group(db, row)
-            transition(row, 'sso')
+            if members_first(row):
+                sync_items(db, row)
+                if not all(i.state == 'completed' for i in items(db, row)):
+                    raise HTTPException(409, '整组订阅已结束，但仍有成员授权未确认，请核对原任务')
+                admit_exports(db, row)
+            else:
+                transition(row, 'sso')
         elif op.state in ('failed', 'needs_review'):
             transition(row, 'group_open', 'paused' if op.state == 'failed' else 'needs_review', op.error)
         return
@@ -351,13 +370,22 @@ def _advance(db, row):
         if failed:
             transition(row, 'sso', 'needs_review', failed.error)
             return
+        if members_first(row) and current and all(i.state == 'prepared' for i in current):
+            transition(row, 'group_open')
+            return
         pending = [i for i in current if i.state != 'completed'
                    and db.get(Subscription, i.record_id) is None]
         if pending:
             # The accepted intent bounds this account to at most 100 children.
             # Queue admission stays atomic; only the bounded dispatcher may
             # execute them, independently of a slow sibling's remote calls.
-            active_group(db, row)
+            if members_first(row):
+                from .group_subscription_state import live_grant
+                group = db.get(ManagedGroup, row.group_id)
+                if group.state != 'ready' or group.active_job_id or live_grant(db, group.id):
+                    raise HTTPException(409, '分组尚未就绪或出现未确认授权，不能创建本批次成员')
+            else:
+                active_group(db, row)
             for item in pending:
                 record = admit_frozen_sso(db, actor, row, item)
                 item.sso_batch_id = record.batch_id
@@ -397,7 +425,7 @@ def _run_one(account_id):
         return True
 
 
-def allowed_actions(row, *, export_retry=False, resumable=False):
+def allowed_actions(row, *, export_retry=False, resumable=False, failed_items=False):
     if row.stop_requested_at:
         if row.state == 'stopped' and resumable:
             return ['resume']
@@ -407,7 +435,7 @@ def allowed_actions(row, *, export_retry=False, resumable=False):
     if row.state in ('queued', 'running'):
         return ['stop']
     if row.state == 'paused':
-        return ['retry', 'stop']
+        return ['retry', *(['retry_failed'] if failed_items else []), 'stop']
     if row.state == 'needs_review':
-        return ['recheck', 'stop']
+        return ['recheck', *(['retry_failed'] if failed_items else []), 'stop']
     return []
