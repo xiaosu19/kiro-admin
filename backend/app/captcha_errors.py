@@ -33,6 +33,6 @@ def captcha_failure(automation):
     code = safe_captcha_code(automation.get("reason"))
     message = MESSAGES[code]
     previous = automation.get("last_failure_code")
-    if code in ("captcha_limit", "captcha_attempt_limit", "captcha_timeout") and isinstance(previous, str) and previous in MESSAGES and previous != code:
+    if code in ("captcha_limit", "captcha_attempt_limit", "captcha_timeout", "captcha_browser_failed") and isinstance(previous, str) and previous in MESSAGES and previous != code:
         message += "；最近原因：" + MESSAGES[previous]
     return code, message
