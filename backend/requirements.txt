@@ -1,0 +1,14 @@
+fastapi>=0.115,<1
+uvicorn[standard]>=0.34,<1
+sqlalchemy>=2.0.36,<3
+pydantic-settings>=2.8,<3
+boto3>=1.35,<2
+cryptography>=44
+bcrypt>=4.2
+PyJWT>=2.10,<3
+email-validator>=2.2
+requests[socks]>=2.32,<3
+httpx>=0.28,<1
+playwright==1.63.0
+socksio==1.0.0
+PySocks==1.7.1

@@ -1,0 +1,7 @@
+[Unit]
+Description=Renew Kiro Console HTTPS certificate
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/kiro-console/certbot/bin/certbot renew --quiet --no-random-sleep-on-renew --deploy-hook "/usr/bin/systemctl reload nginx"

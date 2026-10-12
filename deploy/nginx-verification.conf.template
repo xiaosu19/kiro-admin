@@ -1,0 +1,29 @@
+# A separate hostname on the same physical console server. Only this neutral
+# frame reaches the application; cookies and console API routes never do.
+server {
+    listen 80;
+    server_name __VERIFY_DOMAIN__;
+    location ^~ /.well-known/acme-challenge/ { root /var/www/acme; }
+    location / { return 301 https://__VERIFY_DOMAIN__$request_uri; }
+}
+server {
+    listen 443 ssl;
+    server_name __VERIFY_DOMAIN__;
+    ssl_certificate __VERIFY_CERTIFICATE__;
+    ssl_certificate_key __VERIFY_CERTIFICATE_KEY__;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    server_tokens off;
+    client_max_body_size 1k;
+    add_header Strict-Transport-Security "max-age=31536000" always;
+    location = /auth-widget {
+        limit_except GET { deny all; }
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host $host;
+        proxy_set_header Cookie "";
+        proxy_hide_header Set-Cookie;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+    location / { return 404; }
+}

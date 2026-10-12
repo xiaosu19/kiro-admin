@@ -1,0 +1,30 @@
+.provisioning-shared-configuration { display: grid; gap: 22px; margin-top: 22px; }
+.provisioning-shared-fields { margin: 0; min-width: 0; border: 1px solid var(--line); }
+.provisioning-shared-fields > legend { padding: 0 9px; font-size: 17px; font-weight: 650; color: var(--blue); }
+.provisioning-shared-grid { display: grid; grid-template-columns: minmax(150px, .65fr) minmax(200px, 1fr) minmax(280px, 1.65fr); gap: 18px; align-items: start; }
+.provisioning-shared-policy > fieldset { margin: 0; }
+.provisioning-selected-accounts { min-width: 0; }
+.provisioning-selected-accounts > .section-heading { margin-bottom: 14px; }
+.provisioning-selected-accounts > .section-heading h2 { margin: 0; }
+.provisioning-selected-accounts table { table-layout: fixed; }
+.provisioning-selected-accounts th:first-child { width: 22%; }
+.provisioning-selected-accounts th:nth-child(2) { width: 31%; }
+.provisioning-selected-accounts th:nth-child(3) { width: 28%; }
+.provisioning-selected-accounts td { vertical-align: top; overflow-wrap: anywhere; }
+.provisioning-selected-accounts td > small { display: block; margin-top: 5px; }
+.provisioning-selected-accounts .searchable-select { min-width: 0; }
+.provisioning-summary-actions { gap: 8px 14px; align-items: flex-start; }
+.provisioning-summary-actions .text-button { padding: 0; text-align: left; }
+.provisioning-custom-settings > td { padding-top: 0; }
+.provisioning-custom-settings .provisioning-account-fields { margin-top: 14px; max-width: 850px; }
+.provisioning-custom-settings .provisioning-fields-grid { grid-template-columns: 150px minmax(0, 1fr); }
+@media (max-width: 1100px) {
+  .provisioning-shared-grid { grid-template-columns: minmax(150px, .65fr) minmax(200px, 1fr); }
+  .provisioning-shared-policy { grid-column: 1 / -1; }
+  .provisioning-selected-accounts table { min-width: 760px; }
+}
+@media (max-width: 600px) {
+  .provisioning-shared-fields, .provisioning-selected-accounts { padding: 16px; }
+  .provisioning-shared-grid { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  .provisioning-custom-settings .provisioning-fields-grid { grid-template-columns: minmax(0, 1fr); }
+}

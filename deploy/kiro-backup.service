@@ -1,0 +1,19 @@
+[Unit]
+Description=Kiro Console encrypted backup and restore verification
+After=network-online.target kiro-console.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/kiro-console/current/backend
+EnvironmentFile=/etc/kiro-console/backup.env
+ExecStart=/opt/kiro-console/venv/bin/python -m app.backup create
+TimeoutStartSec=1800
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/kiro-console
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX

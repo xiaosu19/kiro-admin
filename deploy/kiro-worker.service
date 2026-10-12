@@ -1,0 +1,24 @@
+[Unit]
+Description=Kiro Console durable provisioning worker
+After=network-online.target kiro-console.service
+Wants=network-online.target
+
+[Service]
+User=kiro-console
+Group=kiro-console
+WorkingDirectory=/opt/kiro-console/current/backend
+EnvironmentFile=/etc/kiro-console/app.env
+ExecStart=/opt/kiro-console/venv/bin/python -m app.worker
+Restart=always
+RestartSec=3
+TimeoutStopSec=45
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/kiro-console
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

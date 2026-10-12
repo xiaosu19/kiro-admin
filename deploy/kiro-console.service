@@ -1,0 +1,23 @@
+[Unit]
+Description=Kiro Console API and static frontend
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=kiro-console
+Group=kiro-console
+WorkingDirectory=/opt/kiro-console/current/backend
+EnvironmentFile=/etc/kiro-console/app.env
+ExecStart=/opt/kiro-console/venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 2 --proxy-headers --forwarded-allow-ips 127.0.0.1
+Restart=always
+RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/kiro-console
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,11 @@
+[Unit]
+Description=Back up Kiro Console every hour
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+RandomizedDelaySec=60
+Unit=kiro-backup.service
+
+[Install]
+WantedBy=timers.target

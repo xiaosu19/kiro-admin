@@ -1,0 +1,56 @@
+# === 敏感文件（绝不上传）===
+.env
+.env.*
+!.env.example
+*.db
+data.db
+*.sqlite
+*.sqlite3
+
+# === Python ===
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+*.egg-info/
+
+# === Node / 前端 ===
+node_modules/
+dist/
+dist-ssr/
+*.local
+.vite/
+
+# === 系统/编辑器 ===
+.DS_Store
+.idea/
+.vscode/
+*.log
+key/
+secrets/
+*.pem
+*.kirobk
+*.db-wal
+*.db-shm
+*.sqlite-wal
+*.sqlite-shm
+*.tsbuildinfo
+
+# Private runtime data and generated credentials
+/key/
+/secrets/
+/exports/
+/backups/
+/artifacts/
+/test-results/
+/playwright-report/
+*.bundle
+*.tar
+*.tar.gz
+*.zip
+*.har
+*.bak
+*.db-journal
+*.sqlite3-wal
+*.sqlite3-shm
