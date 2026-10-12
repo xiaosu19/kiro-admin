@@ -23,6 +23,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from .auth_widget import public_challenge
+from .config import settings
 from .identity_login import AuthError
 from .vision_captcha import VisionError
 from .captcha_errors import ActionRequired, safe_captcha_code
@@ -475,6 +476,8 @@ async def _inspect(page):
 
 async def _drive(page, http, provider, before_recognition, deadline, failure):
     attempts, opened, submitted, rejected = 0, False, None, None
+    # The durable hook may stop sooner after restart; direct calls remain bounded too.
+    max_attempts = settings.captcha_max_attempts
     while True:
         _remaining(deadline)
         http.gateway._check_proxy()
@@ -523,7 +526,7 @@ async def _drive(page, http, provider, before_recognition, deadline, failure):
                 if await _in_frame(current.frame, _image_version(image, http)) != version:
                     await asyncio.sleep(min(0.1, _remaining(deadline)))
                     continue
-                if attempts >= 3:
+                if attempts >= max_attempts:
                     raise BrowserChallengeError("captcha_attempt_limit",
                         last_failure_code="captcha_answer_rejected" if submitted else None)
                 http.gateway._check_proxy()
@@ -538,7 +541,7 @@ async def _drive(page, http, provider, before_recognition, deadline, failure):
                         raise
                     http.gateway._check_proxy()
                     _remaining(deadline)
-                    if attempts >= 3:
+                    if attempts >= max_attempts:
                         raise BrowserChallengeError("captcha_attempt_limit", last_failure_code=error.code) from None
                     # Retry within this live AMS session. Reopening the widget would
                     # consume its one-use redemption token again. Rescan before OCR.

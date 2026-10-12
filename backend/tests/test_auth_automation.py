@@ -62,17 +62,98 @@ def test_image_answer_is_submitted_before_verified_event():
     assert decrypt(progress.sealed_state)["captcha_automation"]["status"] == "verified"
 
 
-def test_rejected_answers_stop_at_three_and_preserve_manual_challenge():
+@pytest.mark.parametrize("limit", [1, 3, 6])
+def test_rejected_answers_stop_at_configured_limit_and_preserve_manual_challenge(monkeypatch, limit):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "captcha_max_attempts", limit)
     adapter, vision = CaptchaLogin(accepts=False), Vision()
     progress = solve(adapter, adapter.start(), vision)
-    assert progress.status == "challenge" and len(adapter.answers) == len(vision.calls) == 3
+    assert progress.status == "challenge" and len(adapter.answers) == len(vision.calls) == limit
     assert "captcha_verified" not in [event.event for event in adapter.events]
     state = decrypt(progress.sealed_state)
     assert state["captcha_automation"]["status"] == "requires_action"
     assert state["challenge"]["kind"] == "image"
     # A worker restart must not silently reset the attempt count.
     again = solve(adapter, progress, vision)
-    assert again.status == "challenge" and len(vision.calls) == 3
+    assert again.status == "challenge" and len(vision.calls) == limit
+
+
+def test_native_image_can_succeed_on_first_attempt_plus_five_retries():
+    class SixthAnswerLogin(CaptchaLogin):
+        def _advance(self, state, answer):
+            self.accepts = len(self.answers) == 5
+            return super()._advance(state, answer)
+
+    adapter, vision = SixthAnswerLogin(), Vision()
+    progress = solve(adapter, adapter.start(), vision)
+    automatic = decrypt(progress.sealed_state)["captcha_automation"]
+    assert progress.status == "ready" and automatic["status"] == "verified"
+    assert automatic["attempts"] == automatic["submissions"] == len(vision.calls) == 6
+    verified = [event for event in adapter.events if event.event == "captcha_verified"]
+    assert len(verified) == 1
+    assert decrypt(verified[0].sealed_state)["captcha_automation"]["submissions"] == 6
+
+
+def test_restart_replacement_image_and_new_provider_share_original_six_attempt_budget():
+    class InterruptedVision(Vision):
+        def recognize(self, *args, **kwargs):
+            answer = super().recognize(*args, **kwargs)
+            if len(self.calls) == 3:
+                raise RuntimeError("worker interrupted after recognition checkpoint")
+            return answer
+
+    first, first_vision = CaptchaLogin(accepts=False), InterruptedVision()
+    original = first.start()
+    with pytest.raises(RuntimeError, match="worker interrupted"):
+        solve(first, original, first_vision)
+    checkpoint = first.events[-1]
+    stored = decrypt(checkpoint.sealed_state)
+    assert stored["captcha_automation"]["attempts"] == 3
+    original_deadline = stored["captcha_automation"]["deadline"]
+
+    restarted, new_provider = CaptchaLogin(accepts=False), Vision()
+    restarted.clock = lambda: NOW + 20
+    previous_challenge = stored["challenge"]["id"]
+    restarted._challenge(stored, {"captchaURL": "https://us-east-1.signin.aws/platform/captcha/replacement", "captchaCES": "replacement-ces"})
+    assert stored["challenge"]["id"] != previous_challenge
+    restored = restarted._publish(stored)
+    result = solve(restarted, restored, new_provider)
+    automatic = decrypt(result.sealed_state)["captcha_automation"]
+    assert automatic["status"] == "requires_action" and automatic["reason"] == "captcha_attempt_limit"
+    assert automatic["last_failure_code"] == "captcha_answer_rejected"
+    assert automatic["deadline"] == original_deadline == NOW + 60
+    assert automatic["attempts"] == len(first_vision.calls) + len(new_provider.calls) == 6
+    assert len(new_provider.calls) == 3
+    assert "captcha_verified" not in [event.event for event in restarted.events]
+
+    another_provider = Vision()
+    assert solve(CaptchaLogin(), result, another_provider).status == "challenge"
+    assert not another_provider.calls
+
+
+def test_six_attempt_budget_cannot_extend_original_sixty_second_deadline():
+    clock = [NOW]
+    adapter = CaptchaLogin(accepts=False)
+    adapter.clock = lambda: clock[0]
+
+    class SlowVision(Vision):
+        def recognize(self, *args, **kwargs):
+            answer = super().recognize(*args, **kwargs)
+            clock[0] += 30
+            return answer
+
+    vision = SlowVision()
+    result = solve(adapter, adapter.start(), vision)
+    automatic = decrypt(result.sealed_state)["captcha_automation"]
+    assert automatic["deadline"] == NOW + 60
+    assert automatic["status"] == "requires_action" and automatic["reason"] == "captcha_timeout"
+    assert automatic["attempts"] == len(vision.calls) == 2
+    assert len(adapter.answers) == 1 and "captcha_verified" not in [event.event for event in adapter.events]
+    restarted, new_provider = CaptchaLogin(), Vision()
+    restarted.clock = lambda: NOW + 61
+    assert solve(restarted, result, new_provider).status == "challenge"
+    assert not new_provider.calls
 
 
 def test_missing_provider_does_not_report_recognizing(monkeypatch):
@@ -90,7 +171,7 @@ def test_provider_failures_never_submit_a_guess():
     adapter, vision = CaptchaLogin(), Vision(VisionError("captcha_provider_failed"))
     progress = solve(adapter, adapter.start(), vision)
     assert progress.status == "challenge" and not adapter.answers
-    assert len(vision.calls) == 3
+    assert len(vision.calls) == 6
     assert "captcha_verified" not in [event.event for event in adapter.events]
     automatic = decrypt(progress.sealed_state)["captcha_automation"]
     assert automatic["reason"] == "captcha_attempt_limit"
@@ -125,7 +206,7 @@ def test_rejected_native_answers_keep_safe_rejection_code_at_limit():
     automatic = decrypt(progress.sealed_state)["captcha_automation"]
     assert automatic["reason"] == "captcha_attempt_limit"
     assert automatic["last_failure_code"] == "captcha_answer_rejected"
-    assert automatic["attempts"] == automatic["submissions"] == 3
+    assert automatic["attempts"] == automatic["submissions"] == 6
 
 
 def test_ams_limit_preserves_safe_provider_reason_without_raw_exception():
@@ -194,7 +275,7 @@ def test_deadline_is_durable_before_image_fetch_or_browser_start():
     assert not vision.calls and not adapter.answers
 
 
-def test_no_ocr_widget_rejections_are_still_limited_to_three_submissions():
+def test_no_ocr_widget_rejections_are_still_limited_to_six_submissions():
     class SilentWidgetLogin(CaptchaLogin):
         def _advance(self, state, answer):
             self.answers.append(answer)
@@ -204,8 +285,8 @@ def test_no_ocr_widget_rejections_are_still_limited_to_three_submissions():
         calls.append(1)
         return "official-code"
     result = solve(adapter, adapter.start(ams=True), vision, browser_solver=widget)
-    assert result.status == "challenge" and len(calls) == len(adapter.answers) == 3
+    assert result.status == "challenge" and len(calls) == len(adapter.answers) == 6
     state = decrypt(result.sealed_state)
-    assert state["captcha_automation"]["submissions"] == 3
+    assert state["captcha_automation"]["submissions"] == 6
     assert state["captcha_automation"]["attempts"] == 0
     assert "captcha_recognizing" not in [event.event for event in adapter.events]

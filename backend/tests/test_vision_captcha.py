@@ -375,7 +375,7 @@ def test_vision_settings_default_to_disabled_and_bounded(monkeypatch):
     assert configuration.captcha_vision_endpoint == "https://api.anthropic.com/v1/messages"
     assert configuration.captcha_vision_model == "claude-opus-4.6"
     assert configuration.captcha_vision_timeout_seconds == 20
-    assert configuration.captcha_max_attempts == 3
+    assert configuration.captcha_max_attempts == 6
     assert configuration.captcha_total_timeout_seconds == 60
     assert configuration.captcha_browser_concurrency == 2
     assert configuration.captcha_chromium_executable is None
@@ -387,7 +387,7 @@ def test_vision_settings_default_to_disabled_and_bounded(monkeypatch):
         {"captcha_vision_timeout_seconds": 0},
         {"captcha_vision_timeout_seconds": 61},
         {"captcha_max_attempts": 0},
-        {"captcha_max_attempts": 4},
+        {"captcha_max_attempts": 7},
         {"captcha_total_timeout_seconds": 4},
         {"captcha_total_timeout_seconds": 61},
         {"captcha_browser_concurrency": 0},
@@ -400,3 +400,11 @@ def test_settings_reject_unbounded_automation(options):
 
     with pytest.raises(ValidationError):
         Settings(_env_file=None, **options)
+
+
+@pytest.mark.parametrize("limit", [1, 3, 6])
+def test_recognition_attempt_limit_can_be_lowered_within_six(limit):
+    from app.config import Settings
+
+    configuration = Settings(_env_file=None, captcha_max_attempts=limit)
+    assert configuration.captcha_max_attempts == limit

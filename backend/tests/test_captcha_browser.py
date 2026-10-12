@@ -203,9 +203,10 @@ class Widget:
 class AMCSRetryWidget(Widget):
     """Official SDK semantics: a rejected guess refreshes the same form/image."""
 
-    def __init__(self, mode="refresh", rejection_status=400):
+    def __init__(self, mode="refresh", rejection_status=400, accepts_on=2):
         super().__init__("iframe")
         self.retry_mode, self.rejection_status = mode, rejection_status
+        self.accepts_on = accepts_on
         self.image_round, self.verifications = 0, 0
 
     def retry_frame(self):
@@ -276,7 +277,7 @@ class AMCSRetryWidget(Widget):
         if path == "/amcs/verify":
             assert json.loads(request.content) == {"guess": "A7b93", "sessionId": "local-session"}
             self.verifications += 1
-            if self.verifications == 1 or self.retry_mode == "always_reject" or self.retry_mode.startswith("stale"):
+            if self.verifications < self.accepts_on or self.retry_mode == "always_reject" or self.retry_mode.startswith("stale"):
                 return httpx.Response(self.rejection_status, json={"invalidGuess": True}, headers=cors)
             return httpx.Response(200, json={"amcsAccessCode": "local-amcs-code"}, headers=cors)
         return httpx.Response(200, json={"accessCode": "official-retry-access-code"}, headers=cors)
@@ -598,14 +599,14 @@ def test_network_is_closed_to_untrusted_destinations_and_unbounded_bodies(browse
     assert len(widget.requests) == 1
 
 
-def test_three_rejected_character_submissions_bound_actual_ocr(browser_fixture):
+def test_six_rejected_character_submissions_bound_actual_ocr(browser_fixture):
     module = browser_module()
     install, _, _ = browser_fixture
     widget, vision, attempts = install("reject"), Vision(), []
     with pytest.raises(module.BrowserChallengeError, match="^captcha_attempt_limit$"):
         run(module, Gateway(), vision, lambda: attempts.append(1))
-    assert len(vision.images) == len(attempts) == 3
-    assert len([request for request in widget.requests if request.method == "POST"]) == 3
+    assert len(vision.images) == len(attempts) == 6
+    assert len([request for request in widget.requests if request.method == "POST"]) == 6
 
 
 @pytest.mark.parametrize("mode,status", [("refresh", 400), ("refresh", 200), ("same_source", 400)])
@@ -746,16 +747,32 @@ def test_same_source_refresh_during_screenshot_discards_old_crop_before_ocr(brow
     assert len(vision.images) == len(attempts) == widget.verifications == 2
 
 
-def test_sdk_400_rejections_stop_at_three_actual_recognitions(browser_fixture):
+@pytest.mark.parametrize("limit", [1, 3, 6])
+def test_sdk_400_rejections_stop_at_configured_recognition_limit(browser_fixture, monkeypatch, limit):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "captcha_max_attempts", limit)
     module = browser_module()
     install, _, _ = browser_fixture
     widget = install(widget=AMCSRetryWidget("always_reject"))
     vision, attempts = Vision(), []
-    with pytest.raises(module.BrowserChallengeError, match="^captcha_attempt_limit$"):
-        run(module, Gateway(), vision, lambda: attempts.append(1))
-    assert len(vision.images) == len(attempts) == widget.verifications == 3
-    assert len({image for image, _ in vision.images}) == 3
+    with pytest.raises(module.BrowserChallengeError, match="^captcha_attempt_limit$") as caught:
+        run(module, Gateway(), vision, lambda: attempts.append(1), seconds=12)
+    assert caught.value.last_failure_code == "captcha_answer_rejected"
+    assert len(vision.images) == len(attempts) == widget.verifications == limit
+    assert len({image for image, _ in vision.images}) == limit
     assert not any(request.url.path == "/submit" for request in widget.requests)
+
+
+def test_sdk_character_challenge_can_succeed_on_sixth_recognition(browser_fixture):
+    module = browser_module()
+    install, _, launches = browser_fixture
+    widget = install(widget=AMCSRetryWidget(accepts_on=6))
+    vision, attempts = Vision(), []
+    assert run(module, Gateway(), vision, lambda: attempts.append(1), seconds=12) == "official-retry-access-code"
+    assert len(vision.images) == len(attempts) == widget.verifications == 6
+    assert len({image for image, _ in vision.images}) == 6
+    assert len(launches) == len([request for request in widget.requests if request.url.path == "/submit"]) == 1
 
 
 def test_sdk_retry_still_requires_official_completion_callback(browser_fixture):
@@ -986,7 +1003,7 @@ def test_fatal_vision_error_still_propagates_without_retry(browser_fixture, code
     assert not any(r.url.path == "/verify" for r in widget.requests)
 
 
-def test_temporary_vision_errors_still_stop_at_three_actual_attempts(browser_fixture):
+def test_temporary_vision_errors_still_stop_at_six_actual_attempts(browser_fixture):
     from app.vision_captcha import VisionError
 
     module = browser_module()
@@ -1003,7 +1020,7 @@ def test_temporary_vision_errors_still_stop_at_three_actual_attempts(browser_fix
     with pytest.raises(module.BrowserChallengeError, match="^captcha_attempt_limit$") as caught:
         run(module, Gateway(), vision, lambda: attempts.append(1))
     assert caught.value.last_failure_code == "captcha_provider_failed"
-    assert len(vision.images) == len(attempts) == 3 and len(launches) == 1
+    assert len(vision.images) == len(attempts) == 6 and len(launches) == 1
     assert not any(r.url.path == "/verify" for r in widget.requests)
 
 
@@ -1011,6 +1028,8 @@ def test_temporary_vision_errors_still_stop_at_three_actual_attempts(browser_fix
     (1, 'captcha_provider_failed', False), (2, 'captcha_provider_failed', False),
     (1, 'captcha_answer_rejected', False), (2, 'captcha_answer_rejected', False),
     (2, 'captcha_provider_failed', True),
+    (3, 'captcha_provider_failed', False), (6, 'captcha_provider_failed', False),
+    (3, 'captcha_answer_rejected', False), (6, 'captcha_answer_rejected', False),
 ])
 def test_global_ams_budget_preserves_last_safe_failure(browser_fixture, monkeypatch, limit, cause, first_rejected):
     from app.config import settings
