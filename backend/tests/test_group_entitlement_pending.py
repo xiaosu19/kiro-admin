@@ -225,7 +225,8 @@ def test_confirmed_join_releases_only_the_group_write_lock(alice, native, monkey
         assert record.state == "queued"
         assert db.get(ManagedGroup, "group-1").active_job_id is None
         retry = db.get(AutomaticRetry, ("sso", record_id))
-        assert retry.mode == "reconcile" and retry.retry_count == 1
+        assert retry.mode == "reconcile" and retry.retry_count == 0
+        assert retry.propagation_check_count == 1
         assert retry.error_code == "subscription_observation_propagating"
     assert counter() == (0, 1, 0)
     response = alice.post("/api/auth-batches", json={

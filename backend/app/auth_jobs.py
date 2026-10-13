@@ -16,6 +16,7 @@ from fastapi import HTTPException
 from sqlalchemy import and_, or_, select, update
 
 from .account_dispatcher import account_fence, record_scope, resource_fence
+from .auth_session_dispatcher import AuthSession
 from .auth_batches import (
     check_expiry,
     expire_challenge,
@@ -121,6 +122,23 @@ def candidate_tasks(*, account_id=None, record_id=None):
                  .where(eligible_jobs(account_id=account_id, record_id=record_id))
                  .order_by(RecordOperation.created_at, AuthJob.position))
         return [(aid, 'auth', rid) for aid, rid in db.execute(query)]
+
+
+def session_candidates():
+    """One metadata read includes sleeping/recoverable sessions as well as work."""
+    with SessionLocal() as db:
+        query = (select(
+            Subscription.aws_account_id, Subscription.id,
+            or_(RecordOperation.attempts > 0, AuthSecret.workflow_encrypted.is_not(None),
+                RecordOperation.state.in_(("running", "polling"))),
+            eligible_jobs(), RecordOperation.state == "running",
+        ).join(RecordOperation, RecordOperation.record_id == Subscription.id)
+         .join(AuthJob, AuthJob.id == RecordOperation.id)
+         .outerjoin(AuthSecret, AuthSecret.job_id == AuthJob.id)
+         .where(RecordOperation.state.in_(("queued", "running", "polling")))
+         .order_by(RecordOperation.created_at, AuthJob.position))
+        return [AuthSession((aid, 'auth', rid), bool(started), bool(ready), running)
+                for aid, rid, started, ready, running in db.execute(query)]
 
 
 def claim_job(*, account_id=None, record_id=None):

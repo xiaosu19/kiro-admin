@@ -191,7 +191,7 @@ export function AccountProgress({ row, batch, user, disabled, run, download, onA
     <p>已确认开通 {completed} / {row.quantity} 人 · JSON：{exportStates[row.export_state] || row.export_state}</p><progress aria-label={`${row.batch_number} 开通进度`} value={completed} max={row.quantity} />
     <p>{row.group.id ? <NavLink to={`/groups?group_id=${encodeURIComponent(row.group.id)}`}>分组：{row.group.name} · 查看或修改停止规则 →</NavLink> : `分组：${row.group.name}（等待创建）`}</p>
     <p className="muted">当前规则：{policySummary(row.effective_policy || row.stop_policy)} · 开通：{row.activated_at ? date(row.activated_at) : '等待确认'} · 共同截止：{row.effective_stop_at ? stopTime(row.effective_stop_at) : '未设置或等待开通'}</p>
-    <ErrorBox text={row.error || ''} />
+    <ErrorBox text={row.propagation_state ? '' : row.error || ''} />
     <RetryStatus value={row} />
     <div className="row-actions">{row.allowed_actions.map(action => <button key={action} type="button" className={action === 'stop' ? 'danger' : 'secondary'} disabled={disabled} onClick={() => action === 'resume' ? setConfirmResume(true) : run(`/provisioning-batches/${batch.id}/accounts/${row.id}/${action}`, { request_key: crypto.randomUUID() })}>{actionLabels[action] || action}</button>)}</div>
     {confirmResume && row.allowed_actions.includes('resume') && <div className="info-note" role="group" aria-label="确认恢复未完成项">
@@ -203,7 +203,7 @@ export function AccountProgress({ row, batch, user, disabled, run, download, onA
     {row.recovery && !row.items?.some(i => i.recovery?.path === row.recovery?.path) && <RecoveryButton recovery={row.recovery} disabled={disabled} run={run} />}
     <ProvisioningDownloads actorId={user.id} batch={batch} account={row} disabled={disabled} onDownload={download} />
     <div className="table-wrap"><table><thead><tr><th>内部 ID / 真实用户名</th><th>开通状态</th><th>开通时间</th><th>JSON 转换</th><th>恢复</th></tr></thead><tbody>{row.items?.map(item => <tr key={item.record_id}>
-      <td><strong className="mono">{item.internal_id}</strong><small className="mono">{item.username}</small></td><td><State state={item.state} /><small>{provisioningPhases[item.phase] || item.phase}</small><RetryStatus value={item} />{item.error && <small className="error-text">{item.error}</small>}</td><td>{item.subscribed_at ? date(item.subscribed_at) : '等待确认'}</td>
+      <td><strong className="mono">{item.internal_id}</strong><small className="mono">{item.username}</small></td><td><State state={item.propagation_state === "waiting" ? "AWS 同步中" : item.state} /><small>{provisioningPhases[item.phase] || item.phase}</small><RetryStatus value={item} />{item.error && !item.propagation_state && <small className="error-text">{item.error}</small>}</td><td>{item.subscribed_at ? date(item.subscribed_at) : '等待确认'}</td>
       <td>{exportStates[item.export_state] || item.export_state}{item.export_retry && <RetryStatus value={item.export_retry} />}{item.export_error && <small className="error-text">{item.export_error}</small>}{item.auth_batch_id && <button type="button" className="text-button" onClick={() => onAuth(item.auth_batch_id!)} disabled={disabled}>授权与转换进度</button>}</td>
       <td>{item.recovery && <RecoveryButton recovery={item.recovery} disabled={disabled} run={run} />}</td>
     </tr>)}</tbody></table></div>

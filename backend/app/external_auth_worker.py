@@ -10,6 +10,7 @@ from sqlalchemy import and_, or_, select
 
 from .account_dispatcher import account_fence, resource_fence
 from .auth_automation import automate_challenge
+from .auth_session_dispatcher import AuthSession
 from .auth_principals import apply_managed_credential, validate_managed
 from .config import settings
 from .database import SessionLocal
@@ -54,6 +55,26 @@ def candidate_tasks():
         for item in rows:
             account = json.loads(item.configuration).get('_managed_account_id', item.lane_id)
             lanes.setdefault(item.lane_id, (account, 'external', item.lane_id))
+        return list(lanes.values())
+
+
+def session_candidates():
+    """Project scheduling metadata only, including future polls and retry waits."""
+    with SessionLocal() as db:
+        query = select(
+            ExternalExportItem.lane_id, ExternalExportItem.configuration,
+            or_(ExternalExportItem.workflow_encrypted.is_not(None), ExternalExportItem.retry_count > 0,
+                ExternalExportItem.state.in_(('running', 'polling'))),
+            eligible(), ExternalExportItem.state == 'running',
+        ).where(ExternalExportItem.state.in_(('queued', 'running', 'polling'))).order_by(
+            ExternalExportItem.created_at, ExternalExportItem.position)
+        lanes = {}
+        for lane, configuration, started, ready, running in db.execute(query):
+            account = json.loads(configuration).get('_managed_account_id', lane)
+            old = lanes.get(lane)
+            lanes[lane] = AuthSession((account, 'external', lane),
+                bool(started or old and old.started), bool(ready or old and old.ready),
+                bool(running or old and old.running))
         return list(lanes.values())
 
 

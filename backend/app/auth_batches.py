@@ -233,7 +233,7 @@ def batch_view(db, batch, details=True):
                 "error": op.error,
                 "error_code": j.error_code,
                 "cancel_requested": j.cancel_requested,
-                **retry_view(db, 'auth', j.id, active=op.state in ('queued', 'running', 'polling'), rows=retry_rows),
+                **retry_view(db, 'auth', j.id, active=op.state in ('queued', 'running', 'polling'), rows=retry_rows, state=op.state),
                 "username": records[j.record_id].username,
                 "owner_id": records[j.record_id].owner_id,
                 "credential_state": records[j.record_id].credential_state,

@@ -1,4 +1,5 @@
 import { SearchableSelect } from "./SearchableSelect";
+import { RetryStatus } from "./RetryStatus";
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { NavLink } from "react-router-dom";
 import { date, type CancellationMode, type Counter, type GroupActivation, type GroupItem, type LifecycleBatch, type LifecycleItem, type LifecycleKind, type NativeGrant, type NativeOperation, type NativePreview, type Plan, type RecordItem, type User } from "./api";
@@ -147,7 +148,7 @@ export function NativeGroupHistory({ actorId, group }: { actorId: number; group:
   return <section className="panel native-history" aria-label="原生分组订阅历史"><h2>原生分组订阅历史</h2>
     {(history.error || recovery.error) && <p className="error" role="alert">{history.error || recovery.error}</p>}
     {(history.data?.grants || []).map(grant => <article className="native-grant" key={grant.id}><strong>{grant.plan_name} · GROUP</strong><span className="badge">{nativeGrantStates[grant.state]}</span><p>开通：{date(grant.activated_at)} · 共同停止：{date(grant.stop_at)}{grant.cancelled_at && ` · 取消：${date(grant.cancelled_at)}`}{grant.access_ends_at && ` · AWS 到期：${date(grant.access_ends_at)}`}</p>
-      {history.data?.operations.filter(operation => operation.grant_id === grant.id).map(operation => <p key={operation.id}>{operation.automatic ? "定时停止 · " : ""}{operation.kind === "subscribe" ? "开通分组" : "取消分组"} · {lifecycleStates[operation.state]} · {operation.member_count} 人{operation.error && <span className="error-text"> · {operation.error}</span>}{operation.state === "needs_review" && <button className="text-button" disabled={recovery.busy} onClick={async () => { if (await recovery.submit({ id: group.id, name: group.name, principal_type: "GROUP", operation_id: operation.id, state: operation.state, phase: operation.phase, error: operation.error })) void history.refresh(); }}>只读核对该分组操作</button>}</p>)}
+      {history.data?.operations.filter(operation => operation.grant_id === grant.id).map(operation => <p key={operation.id}>{operation.automatic ? "定时停止 · " : ""}{operation.kind === "subscribe" ? "开通分组" : "取消分组"} · {lifecycleStates[operation.state]} · {operation.member_count} 人<RetryStatus value={operation} />{operation.error && !operation.propagation_state && <span className="error-text"> · {operation.error}</span>}{operation.state === "needs_review" && <button className="text-button" disabled={recovery.busy} onClick={async () => { if (await recovery.submit({ id: group.id, name: group.name, principal_type: "GROUP", operation_id: operation.id, state: operation.state, phase: operation.phase, error: operation.error })) void history.refresh(); }}>只读核对该分组操作</button>}</p>)}
     </article>)}
     {!history.data?.grants.length && <p className="muted">{history.loading ? "正在读取原生订阅历史…" : "尚未开通原生分组订阅。"}</p>}
   </section>;

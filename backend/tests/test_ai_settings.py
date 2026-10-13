@@ -189,7 +189,7 @@ def test_schema18_adds_only_user_provider_table_and_preserves_existing_records(t
     import sqlite3
     from sqlalchemy import create_engine, inspect
     from app.database import engine
-    from app.migrations import migrate
+    from app.migrations import VERSION, migrate
     path = tmp_path / 'schema17.db'
     with engine.connect() as source, sqlite3.connect(path) as dest:
         source.connection.driver_connection.backup(dest)
@@ -202,7 +202,7 @@ def test_schema18_adds_only_user_provider_table_and_preserves_existing_records(t
     migrate(target)
     migrate(target)
     with target.connect() as db:
-        assert db.exec_driver_sql('SELECT version FROM console_schema_version').scalar() == 18
+        assert db.exec_driver_sql('SELECT version FROM console_schema_version').scalar() == VERSION
         assert db.exec_driver_sql('SELECT count(*) FROM console_ai_provider_settings').scalar() == 0
         assert db.exec_driver_sql('PRAGMA foreign_key_check').fetchall() == []
         for name, rows in before.items():

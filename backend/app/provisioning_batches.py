@@ -507,9 +507,9 @@ def batch_view(db, batch, detail=True, actor=None):
         row['group_job_state'] = group_jobs[child.group_job_id].state if child.group_job_id in group_jobs else None
         row['native_operation_state'] = native_ops[child.native_operation_id].state if child.native_operation_id in native_ops else None
         if child.native_operation_id:
-            row.update(retry_view(db, 'native', child.native_operation_id, active=row['native_operation_state'] in ('queued', 'running'), rows=retry_rows))
+            row.update(retry_view(db, 'native', child.native_operation_id, active=row['native_operation_state'] in ('queued', 'running'), rows=retry_rows, state=row['native_operation_state']))
         elif child.group_job_id:
-            row.update(retry_view(db, 'group', child.group_job_id, active=row['group_job_state'] in ('queued', 'running'), rows=retry_rows))
+            row.update(retry_view(db, 'group', child.group_job_id, active=row['group_job_state'] in ('queued', 'running'), rows=retry_rows, state=row['group_job_state']))
         row['recovery'] = None
         if row['group_job_state'] in ('failed', 'needs_review'):
             row['recovery'] = {'kind': 'group_retry', 'method': 'POST',
@@ -534,7 +534,7 @@ def batch_view(db, batch, detail=True, actor=None):
                     'record_id', 'position', 'internal_id', 'username', 'email', 'state', 'phase', 'error',
                     'sso_batch_id', 'created_at', 'updated_at', 'finished_at')}
                 record, auth = records.get(item.record_id), auth_ops.get(item.auth_job_id)
-                view.update(retry_view(db, 'sso', item.record_id, active=bool(record and record.state in ('queued', 'running')), rows=retry_rows))
+                view.update(retry_view(db, 'sso', item.record_id, active=bool(record and record.state in ('queued', 'running')), rows=retry_rows, state=record.state if record else None))
                 auth_batch, auth_job = auth_batches.get(item.auth_batch_id), auth_jobs.get(item.auth_job_id)
                 recovery = None
                 if record and record.state in ('failed', 'needs_review'):
@@ -560,7 +560,7 @@ def batch_view(db, batch, detail=True, actor=None):
                         ('waiting' if snapshot['exports']['json'] else 'not_requested')),
                     export_error=(item.export_error or (auth.error if auth else None)) if private_auth else None)
                 if private_auth and auth_job:
-                    view['export_retry'] = retry_view(db, 'auth', auth_job.id, active=bool(auth and auth.state in ('queued', 'running', 'polling')), rows=retry_rows)
+                    view['export_retry'] = retry_view(db, 'auth', auth_job.id, active=bool(auth and auth.state in ('queued', 'running', 'polling')), rows=retry_rows, state=auth.state if auth else None)
                 row['items'].append(view)
         if private_auth:
             from .provisioning_exports import download_summary

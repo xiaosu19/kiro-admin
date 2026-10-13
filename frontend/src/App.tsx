@@ -1,4 +1,5 @@
 import { SearchableSelect } from "./SearchableSelect";
+import { RetryStatus } from "./RetryStatus";
 import { AccountBindings } from "./AccountBindings";
 import { Provisioning } from "./Provisioning";
 import { accountLabel } from "./provisioningLogic";
@@ -2087,6 +2088,7 @@ function Records({
                         <Badge state={r.state} />
                       )}
                       <small>{subscriptionStatus(r)}</small>
+                      <RetryStatus value={r} />
                       {directory && <StopRuleSource record={r} group={groups.data?.find(g => g.id === r.group_id)} />}
                       {r.stop_schedule && r.stop_schedule.mode !== "none" && (
                         <small>
@@ -2100,7 +2102,7 @@ function Records({
                           {authStateLabel[r.operation.state] || "处理中"}
                         </small>
                       )}
-                      {r.error && (
+                      {r.error && !r.propagation_state && (
                         <button
                           className="error-link"
                           onClick={() => setDetail(r)}

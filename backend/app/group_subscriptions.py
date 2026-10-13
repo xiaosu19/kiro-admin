@@ -102,7 +102,7 @@ def operation_view(op):
         "principal_type": "GROUP",
         "member_count": len(json.loads(op.member_snapshot)),
         "automatic": bool(json.loads(op.payload).get("policy_revision")),
-        **(retry_view(db, 'native', op.id, active=op.state in ('queued', 'running')) if db else {}),
+        **(retry_view(db, 'native', op.id, active=op.state in ('queued', 'running'), state=op.state) if db else {}),
     }
 
 

@@ -3,7 +3,7 @@
 from sqlalchemy import inspect, text
 from sqlalchemy.schema import CreateIndex, CreateTable
 
-VERSION = 18
+VERSION = 19
 AUTH_COLUMNS = {
     "credential_state": "VARCHAR(20) NOT NULL DEFAULT 'one_time'",
     "credential_revision": "INTEGER NOT NULL DEFAULT 1",
@@ -76,6 +76,11 @@ def migrate(engine):
             ManagedGroup.__table__.create(conn, checkfirst=True)
             GroupJob.__table__.create(conn, checkfirst=True)
             for table, additions in {
+                "console_automatic_retries": {
+                    "propagation_started_at": "DATETIME",
+                    "propagation_last_checked_at": "DATETIME",
+                    "propagation_check_count": "INTEGER NOT NULL DEFAULT 0",
+                },
                 "console_provisioning_account_batches": {
                     "group_job_id": "VARCHAR(36)", "native_operation_id": "VARCHAR(36)",
                     "native_grant_id": "VARCHAR(36)", "native_request_key": "VARCHAR(80)", "policy_applied_revision": "INTEGER",

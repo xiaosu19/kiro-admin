@@ -126,7 +126,9 @@ def test_group_readback_delay_does_not_fail_prepared_sso_siblings(alice, gateway
     row = final['accounts'][0]
     assert row['phase'] == 'group_open'
     assert row['native_operation_state'] == 'queued'
-    assert row['retry_mode'] == 'reconcile' and row['automatic_retry_count'] == 1
+    assert row['retry_mode'] == 'reconcile' and row['automatic_retry_count'] == 0
+    assert row['propagation_check_count'] == 1 and row['propagation_state'] == 'waiting'
+    assert row['propagation_last_checked_at'] and row['propagation_deadline']
     assert all(i['state'] == 'prepared' for i in row['items'])
     assert not any(i['auth_batch_id'] for i in row['items'])
     before = list(gateway.events)

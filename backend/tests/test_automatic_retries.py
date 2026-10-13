@@ -109,7 +109,7 @@ def test_authentication_refusals_never_automatically_retry(code, status):
         assert db.get(AutomaticRetry, ("sso", rid)) is None
 
 
-def test_uncertain_paid_write_rechecks_five_times_without_resending(alice):
+def test_uncertain_paid_write_rechecks_propagation_without_resending(alice, monkeypatch):
     from app.retry_models import AutomaticRetry
 
     rid = create(alice).json()["id"]
@@ -128,13 +128,19 @@ def test_uncertain_paid_write_rechecks_five_times_without_resending(alice):
     for _ in range(5):
         due("sso", rid)
         assert run_one(LostReply, account_id=1)
-    assert calls == ["write"] + ["read"] * 5
+    from app import automatic_retries
+    elapsed = now() + timedelta(hours=25)
+    monkeypatch.setattr(automatic_retries, "now", lambda: elapsed)
+    due("sso", rid)
+    assert run_one(LostReply, account_id=1)
+    assert calls == ["write"] + ["read"] * 6
     assert count() == (0, 1, 0, 1)
     with SessionLocal() as db:
         record = db.get(Subscription, rid)
         retry = db.get(AutomaticRetry, ("sso", rid))
         assert record.state == "needs_review" and record.step == "subscribe_pending"
-        assert retry.retry_count == 5 and retry.exhausted
+        assert retry.retry_count == 1 and retry.exhausted
+        assert retry.propagation_check_count == 6
 
 
 def test_untyped_uncertain_failure_requires_review_without_automatic_guessing(alice):

@@ -50,6 +50,7 @@ for (const name of [
   "planChangesLogic.ts",
   "PlanChangeManager.tsx",
   "AuthBatches.tsx",
+  "RetryStatus.tsx",
   "AuthSelection.tsx",
   "JsonExport.tsx",
   "AiSettings.tsx",

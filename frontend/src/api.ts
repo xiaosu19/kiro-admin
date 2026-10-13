@@ -286,6 +286,11 @@ export interface Counter {
   cycle_number: number;
 }
 export interface RetryProgress {
+  propagation_state?: "waiting" | "timed_out" | null;
+  propagation_started_at?: string | null;
+  propagation_last_checked_at?: string | null;
+  propagation_deadline?: string | null;
+  propagation_check_count?: number;
   automatic_retry_count?: number;
   automatic_retry_limit?: number;
   next_retry_at?: string | null;
@@ -693,7 +698,7 @@ export interface NativePreview {
   principal_type: "GROUP"; future_members_inherit: true; member_count: number;
   groups: { id: string; name: string; owner_id: number; aws_account_id: number; member_ids: string[]; member_count: number; policy_revision: number }[];
 }
-export interface NativeOperation {
+export interface NativeOperation extends RetryProgress {
   id: string; group_id: string; grant_id: string; kind: "subscribe" | "cancel";
   state: LifecycleState; phase: string; attempts: number; error: string | null;
   write_requested_at: string | null; aws_request_id: string | null; created_at: string;

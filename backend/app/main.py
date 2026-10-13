@@ -1114,7 +1114,7 @@ def subscription_view(r, db, actor=None, numbered=None):
         **(numbered if numbered is not None else provisioning_mappings(db, [r.id])).get(r.id, {}),
         **projections(db, r),
         **record_projection(db, r),
-        **retry_view(db, 'sso', r.id, active=r.state in ('queued', 'running')),
+        **retry_view(db, 'sso', r.id, active=r.state in ('queued', 'running'), state=r.state),
         "subscription_status": r.subscription_status
         if r.provision_only
         else "unknown"

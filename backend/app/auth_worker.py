@@ -6,7 +6,7 @@ import time
 from contextlib import nullcontext
 
 from . import auth_jobs, external_auth_worker
-from .account_dispatcher import AccountDispatcher
+from .auth_session_dispatcher import AuthSessionDispatcher
 from .config import settings
 
 
@@ -22,8 +22,8 @@ def make_dispatcher(*, gateway_factory=None, auth_factory=None,
             external_auth_worker.expire_batches()
             next_maintenance = current + 5
 
-    return AccountDispatcher(
-        lambda: auth_jobs.candidate_tasks() + external_auth_worker.candidate_tasks(),
+    return AuthSessionDispatcher(
+        lambda: auth_jobs.session_candidates() + external_auth_worker.session_candidates(),
         lambda task: (external_auth_worker.run_one(lane_id=task[2]) if task[1] == 'external' else
                      auth_jobs.run_one(gateway_factory, auth_factory, identity_factory,
                                        account_id=task[0], record_id=task[2], maintenance=False)),

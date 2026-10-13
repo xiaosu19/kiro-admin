@@ -1,5 +1,6 @@
 import { accountLabel } from "./provisioningLogic";
 import { SearchableSelect } from "./SearchableSelect";
+import { RetryStatus } from "./RetryStatus";
 import {
   useEffect,
   useRef,
@@ -986,7 +987,8 @@ function GroupDetails({
                   </td>
                   <td>
                     {groupMemberStatus(r)}
-                    {r.error && <small className="muted">{r.error}</small>}
+                    <RetryStatus value={r} />
+                    {r.error && !r.propagation_state && <small className="muted">{r.error}</small>}
                   </td>
                   <td>
                     <div className="row-actions">

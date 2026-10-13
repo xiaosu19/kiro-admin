@@ -55,9 +55,9 @@ def job_view(job, db=None):
     active = job.state in ("queued", "running")
     db = db or object_session(job)
     if db is not None:
-        return result | retry_view(db, "group", job.id, active=active)
+        return result | retry_view(db, "group", job.id, active=active, state=job.state)
     with SessionLocal() as db:
-        return result | retry_view(db, "group", job.id, active=active)
+        return result | retry_view(db, "group", job.id, active=active, state=job.state)
 
 
 def claim_group_job(*, account_id=None):

@@ -1,4 +1,6 @@
 import { SearchableSelect } from "./SearchableSelect";
+import { RetryStatus } from "./RetryStatus";
+export { RetryStatus } from "./RetryStatus";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { NavLink } from "react-router-dom";
 import { api, date, downloadAuthZip, type AuthBatch, type AuthChallenge, type AuthItem, type LoginCredential, type PasswordKind } from "./api";
@@ -88,11 +90,6 @@ export function AuthHistory({ actorId, scope, selectedId, onSelect, version = 0 
 }
 
 type ItemAction = "retry" | "new_reset" | "cancel";
-export function RetryStatus({ value }: { value: import("./api").RetryProgress }) {
-  if (!value.automatic_retry_count) return null;
-  return <small>自动重试 {value.automatic_retry_count}/{value.automatic_retry_limit || 5}
-    {value.next_retry_at ? ` · ${value.retry_mode === "reconcile" ? "只读核对" : "下次重试"}：${date(value.next_retry_at)}` : value.retry_exhausted ? " · 已达上限，请核对后处理" : ""}</small>;
-}
 export function AuthBatchView({ batch, busy, onAction, onDownload, onChallenge }: {
   batch: AuthBatch; busy: boolean; onAction: (action: ItemAction | "cancel_batch" | "retry_batch", item?: AuthItem) => void;
   onDownload: () => void; onChallenge: (item: AuthItem) => void;
