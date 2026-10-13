@@ -9,7 +9,7 @@ import { groupAccessDenied, useGroupAccess, useRemote, type GroupAccess } from "
 import { matchesSelection } from "./selectionSearch";
 import { accountLabel, applySharedProvisioningSettings, completedLegacyRecovery, defaultProvisioningSettings, exportStates, historyQuery,
   inheritProvisioningSettings, ownedGroups, provisioningBody, provisioningIntent, provisioningPhases, provisioningStates, toggleProvisioningAccount,
-  withGroup, type AccountDraft, type ProvisioningAccount, type ProvisioningBatch, type ProvisioningSettings,
+  withGroup, synchronizationProgress, type AccountDraft, type ProvisioningAccount, type ProvisioningBatch, type ProvisioningSettings,
   type ProvisioningBody, type ProvisioningPreview, type Recovery } from "./provisioningLogic";
 import { useProvisioningAdmission, useProvisioningPreview, useProvisioningReport } from "./provisioningRequests";
 
@@ -186,13 +186,18 @@ export function AccountProgress({ row, batch, user, disabled, run, download, onA
 }) {
   const [confirmResume, setConfirmResume] = useState(false);
   const completed = row.items?.filter(i => i.state === 'completed').length || 0;
+  const sync = synchronizationProgress(row);
   return <section className="panel provisioning-account-progress" aria-label={`批次 ${row.batch_number}`}>
-    <div className="section-heading"><div><h3 className="mono">{row.batch_number} · {row.account_name}</h3><p>{row.plan_name} · {provisioningPhases[row.phase] || row.phase}</p></div><State state={row.state} /></div>
-    <p>已确认开通 {completed} / {row.quantity} 人 · JSON：{exportStates[row.export_state] || row.export_state}</p><progress aria-label={`${row.batch_number} 开通进度`} value={completed} max={row.quantity} />
+    <div className="section-heading"><div><h3 className="mono">{row.batch_number} · {row.account_name}</h3><p>{row.plan_name} · {sync ? '等待同步' : provisioningPhases[row.phase] || row.phase}</p></div><State state={sync ? '等待同步' : row.state} /></div>
+    {sync ? <div className="provisioning-sync-progress" role="status">
+      <p><strong>等待同步</strong><span>已同步 {sync.confirmed} / {sync.total} 人</span></p>
+      <progress aria-label={`${row.batch_number} 同步进度`} value={sync.confirmed} max={sync.total} />
+      <small>同步完成后自动继续</small>
+    </div> : <><p>已确认开通 {completed} / {row.quantity} 人 · JSON：{exportStates[row.export_state] || row.export_state}</p><progress aria-label={`${row.batch_number} 开通进度`} value={completed} max={row.quantity} /></>}
     <p>{row.group.id ? <NavLink to={`/groups?group_id=${encodeURIComponent(row.group.id)}`}>分组：{row.group.name} · 查看或修改停止规则 →</NavLink> : `分组：${row.group.name}（等待创建）`}</p>
     <p className="muted">当前规则：{policySummary(row.effective_policy || row.stop_policy)} · 开通：{row.activated_at ? date(row.activated_at) : '等待确认'} · 共同截止：{row.effective_stop_at ? stopTime(row.effective_stop_at) : '未设置或等待开通'}</p>
-    <ErrorBox text={row.propagation_state ? '' : row.error || ''} />
-    <RetryStatus value={row} />
+    <ErrorBox text={sync || row.propagation_state ? '' : row.error || ''} />
+    {!sync && <RetryStatus value={row} />}
     <div className="row-actions">{row.allowed_actions.map(action => <button key={action} type="button" className={action === 'stop' ? 'danger' : 'secondary'} disabled={disabled} onClick={() => action === 'resume' ? setConfirmResume(true) : run(`/provisioning-batches/${batch.id}/accounts/${row.id}/${action}`, { request_key: crypto.randomUUID() })}>{actionLabels[action] || action}</button>)}</div>
     {confirmResume && row.allowed_actions.includes('resume') && <div className="info-note" role="group" aria-label="确认恢复未完成项">
       <p>恢复本批次尚未完成的任务？已完成 {completed} 人会保留。剩余开通将使用当前套餐次数{row.exports.json ? '，完成后继续转换 JSON' : ''}。</p>
@@ -203,7 +208,7 @@ export function AccountProgress({ row, batch, user, disabled, run, download, onA
     {row.recovery && !row.items?.some(i => i.recovery?.path === row.recovery?.path) && <RecoveryButton recovery={row.recovery} disabled={disabled} run={run} />}
     <ProvisioningDownloads actorId={user.id} batch={batch} account={row} disabled={disabled} onDownload={download} />
     <div className="table-wrap"><table><thead><tr><th>内部 ID / 真实用户名</th><th>开通状态</th><th>开通时间</th><th>JSON 转换</th><th>恢复</th></tr></thead><tbody>{row.items?.map(item => <tr key={item.record_id}>
-      <td><strong className="mono">{item.internal_id}</strong><small className="mono">{item.username}</small></td><td><State state={item.propagation_state === "waiting" ? "AWS 同步中" : item.state} /><small>{provisioningPhases[item.phase] || item.phase}</small><RetryStatus value={item} />{item.error && !item.propagation_state && <small className="error-text">{item.error}</small>}</td><td>{item.subscribed_at ? date(item.subscribed_at) : '等待确认'}</td>
+      <td><strong className="mono">{item.internal_id}</strong><small className="mono">{item.username}</small></td><td><State state={item.propagation_state === "waiting" ? "等待同步" : item.state} /><small>{item.propagation_state === 'waiting' ? '等待同步' : provisioningPhases[item.phase] || item.phase}</small>{item.propagation_state !== 'waiting' && <RetryStatus value={item} />}{item.error && !item.propagation_state && <small className="error-text">{item.error}</small>}</td><td>{item.subscribed_at ? date(item.subscribed_at) : '等待确认'}</td>
       <td>{exportStates[item.export_state] || item.export_state}{item.export_retry && <RetryStatus value={item.export_retry} />}{item.export_error && <small className="error-text">{item.export_error}</small>}{item.auth_batch_id && <button type="button" className="text-button" onClick={() => onAuth(item.auth_batch_id!)} disabled={disabled}>授权与转换进度</button>}</td>
       <td>{item.recovery && <RecoveryButton recovery={item.recovery} disabled={disabled} run={run} />}</td>
     </tr>)}</tbody></table></div>
@@ -219,6 +224,10 @@ export function ProvisioningBatchDetail({ id, user, scope, notify, access }: { i
   useEffect(() => { active.current = true; return () => { active.current = false; }; }, []);
   const current = () => active.current && access.canAccess(id);
   const batch = current() && !remote.forbidden ? remote.data : null;
+  const waitingSync = !!batch?.accounts.some(row => synchronizationProgress(row));
+  const syncOnly = waitingSync && batch!.accounts.every(row => row.state === 'completed' || synchronizationProgress(row));
+  const batchError = batch?.accounts.find(row => row.error && !synchronizationProgress(row))?.error
+    || (waitingSync ? '' : batch?.error);
   async function run(path: string, body?: unknown) {
     if (!current() || flight.current) return;
     const request = saved.current || { path, body }, wasPending = !!saved.current;
@@ -264,8 +273,8 @@ export function ProvisioningBatchDetail({ id, user, scope, notify, access }: { i
   }
   if (!access.canAccess(id) || remote.forbidden) return <ErrorBox text="当前批次不可访问，请刷新账号权限。" />;
   return <section className="provisioning-detail" aria-label="批次详情"><ErrorBox text={remote.error || error} />{remote.loading && <p>正在读取批次进度…</p>}
-    {batch && <><div className="panel"><div className="section-heading"><div><h2>批次进度</h2><p>{date(batch.created_at)} · {batch.accounts.length} 个 AWS 账号</p></div><State state={batch.state} /></div>
-      <p className="muted">任务已保存，关闭页面后继续在后台执行。可继续提交另一批次。</p><ErrorBox text={batch.error || ''} />
+    {batch && <><div className="panel"><div className="section-heading"><div><h2>批次进度</h2><p>{date(batch.created_at)} · {batch.accounts.length} 个 AWS 账号</p></div><State state={syncOnly ? '等待同步' : batch.state} /></div>
+      <p className="muted">任务已保存，关闭页面后继续在后台执行。可继续提交另一批次。</p><ErrorBox text={batchError || ''} />
       <ProvisioningDownloads actorId={user.id} batch={batch} disabled={busy || !!pending} onDownload={download} />
       {pending && <div className="info-note">上次操作结果尚未确认，请用原请求确认。<button type="button" className="secondary" disabled={busy} onClick={() => run(pending.path, pending.body)}>继续确认原操作</button></div>}
     </div>{batch.accounts.map(row => <AccountProgress key={row.id} row={row} batch={batch} user={user} disabled={busy || !!pending} run={run} download={download} onAuth={setAuthId} />)}

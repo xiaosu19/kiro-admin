@@ -6,6 +6,7 @@ again against token-backed usage. Profiles are real API responses, never templat
 """
 import json
 import re
+import uuid
 from types import SimpleNamespace
 
 import boto3
@@ -24,22 +25,28 @@ from .identity_login import (
     _query,
     _url,
     require_text,
+    require_number,
 )
 from .models import AwsAccount
 from .proxies import ProxyUnavailable, check_account_proxy, proxy_selection
 from .subscription_eligibility import has_observed_paid_entitlement
+from .security import encrypt
 
 
 class ExternalGateway:
-    def __init__(self, item, configuration, guard):
+    @staticmethod
+    def account_for(item, configuration):
         profile_region = configuration['profile_arn'].split(':')[3] if configuration.get('profile_arn') else None
-        self.account = SimpleNamespace(
+        return SimpleNamespace(
             id=item.id, portal_url=item.portal_url, region=item.region,
             identity_store_id=configuration['directory'],
             instance_arn=configuration.get('instance_arn'),
             profile_arn=configuration.get('profile_arn'),
             subscription_region=configuration.get('api_region') or profile_region or 'us-east-1',
         )
+
+    def __init__(self, item, configuration, guard):
+        self.account = self.account_for(item, configuration)
         self.proxy = None
         self._managed_account = None
         self.captcha_direct_allowed = not configuration.get('_managed_account_id')
@@ -129,6 +136,61 @@ class ExternalEnterpriseAuth(EnterpriseAuth):
                 'instance': a.instance_arn, 'portal': a.portal_url,
                 'api_region': a.subscription_region, 'profile_arn': a.profile_arn}
 
+    def result_refresh_state(self, username, result, *, expected_user_id=None):
+        """Use the original encrypted result's OIDC client, even for older jobs.
+
+        Completed pasted jobs intentionally discard browser/login checkpoints.
+        A refresh needs only the real saved registration and refresh token. No
+        portal login, client registration, password change or device grant is
+        recreated here. The worker rechecks the frozen owner/configuration too.
+        """
+        try:
+            binding = self._binding()
+            user_id = require_text(result['userId'], maximum=256, code='identity_mismatch')
+            region = result['apiRegion']
+            profile = result['profile']
+            if (result['username'] != username or result['startUrl'] != binding['portal']
+                    or result['authRegion'] != binding['region']
+                    or result['identityStoreId'] != binding['directory']
+                    or expected_user_id not in (None, user_id)
+                    or region not in ('us-east-1', 'eu-central-1')
+                    or not verified_external_identity(result['usage'], binding['directory'], user_id)
+                    or not re.fullmatch(r'arn:aws:(?:codewhisperer|q|kiro):' + region
+                        + r':\d{12}:profile/[A-Za-z0-9_-]+', profile['arn'])
+                    or binding['profile_arn'] and profile['arn'] != binding['profile_arn']):
+                raise AuthError('identity_mismatch')
+            registration = {key: require_text(result[key], code='token_invalid')
+                            for key in ('clientId', 'clientSecret')}
+            registration['clientSecretExpiresAt'] = require_number(result['clientSecretExpiresAt'])
+            if registration['clientSecretExpiresAt'] <= self.clock():
+                raise AuthError('expired')
+            tokens = {key: require_text(result[key], code='token_invalid')
+                      for key in ('accessToken', 'refreshToken')}
+            tokens['expiresAt'] = require_number(result['expiresAt'])
+            password = result.get('password')
+            if password is not None:
+                require_text(password, maximum=1024, code='invalid_state')
+            elif result.get('externalAuthorization') is not True:
+                raise AuthError('invalid_state')
+        except (KeyError, TypeError, ValueError):
+            raise AuthError('invalid_state') from None
+        credential = {'binding': {k: binding[k] for k in ('account_id', 'region', 'directory', 'instance')},
+            'username': username, 'expected_user_id': user_id, 'current': password,
+            'candidate': None, 'status': 'confirmed' if password else 'unknown', 'tried': []}
+        return encrypt({'version': 1, 'kind': self.kind, 'binding': binding,
+            'operation_id': str(uuid.uuid4()), 'username': username, 'expected_user_id': user_id,
+            'credential': credential, 'registration': registration, 'tokens': tokens,
+            'external_api_region': region, 'external_authorization': bool(result.get('externalAuthorization')),
+            'profile': profile, 'refresh_profile_arn': profile['arn'],
+            'result': result, 'stage': 'done', 'status': 'done',
+            'revision': 0, 'steps': 0, 'cookies': [], 'inflight': None, 'challenge': None,
+            'expires_at': tokens['expiresAt'], 'password_only': False, 'target_password': None,
+            'recovering': False, 'password_changed': False})
+
+    def begin_result_refresh(self, username, result, *, expected_user_id=None):
+        return self.begin_refresh(self.result_refresh_state(
+            username, result, expected_user_id=expected_user_id))
+
     def _new_state(self, *args, **kwargs):
         if kwargs.get('password_only'):
             raise AuthError('invalid_configuration')
@@ -213,6 +275,8 @@ class ExternalEnterpriseAuth(EnterpriseAuth):
             if not isinstance(arn, str) or not re.fullmatch(r'arn:aws:(?:codewhisperer|q|kiro):' + region + r':\d{12}:profile/[A-Za-z0-9_-]+', arn):
                 continue
             if state['binding']['profile_arn'] and arn != state['binding']['profile_arn']:
+                continue
+            if state.get('refresh_profile_arn') and arn != state['refresh_profile_arn']:
                 continue
             details = profile.get('identityDetails') or {}
             if not isinstance(details, dict):

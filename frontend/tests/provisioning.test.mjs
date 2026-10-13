@@ -13,6 +13,15 @@ const response = (body, status = 200) => new Response(JSON.stringify(body), { st
 const account = { id: 1, account_number: 'a', name: 'Account A', aws_account_id: '123456789012', active: true, proxy_status: 'enabled' };
 const group = { id: 'g', owner_id: 2, aws_account_id: 1, name: 'Owned group', state: 'ready', remote_id: 'aws-g', revision: 4, policy: { mode: 'days', days: 3, revision: 2 } };
 const batch = body => ({ id: 'parent', actor_id: 2, request_key: body.request_key, accounts: body.accounts.map(r => ({ ...r, id: 'child', group: { ...r.group, id: r.group.group_id || 'new-group' } })) });
+test('synchronization progress counts confirmed members and never hides actual failures', () => {
+  const row = { state: 'running', quantity: 60, items: Array.from({ length: 60 }, (_, n) =>
+    n < 2 ? { state: 'completed' } : { state: 'queued', propagation_state: 'waiting' }) };
+  assert.deepEqual(logic.synchronizationProgress(row), { confirmed: 2, total: 60 });
+  assert.equal(logic.synchronizationProgress({ ...row, state: 'stopped' }), null);
+  assert.equal(logic.synchronizationProgress({ ...row, propagation_state: 'timed_out' }), null);
+  assert.equal(logic.synchronizationProgress({ ...row, items: [...row.items, { state: 'failed', error: 'Access denied' }] }), null);
+  assert.equal(logic.synchronizationProgress({ ...row, items: row.items.map(() => ({ state: 'completed' })) }), null);
+});
 function environment(t, fetch) {
   const savedWindow = globalThis.window, savedStorage = globalThis.sessionStorage, storage = new Map(), events = [], intervals = [];
   globalThis.window = { setInterval(callback) { intervals.push(callback); return intervals.length; }, clearInterval() {}, dispatchEvent: event => events.push(event.type) };

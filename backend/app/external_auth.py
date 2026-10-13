@@ -253,6 +253,7 @@ def document(item, result, *, db=None, actor=None):
 @router.post('/{batch_id}/download')
 def download(batch_id: str, format: Literal['zip', 'json'] = 'zip', item_id: str | None = None,
              actor: User = Depends(get_user), db: Session = Depends(get_db)):
+    lock_user_write(db, actor, actor.session_version)
     batch = batch_owned(db, batch_id, actor)
     live(db, batch)
     require_session(batch, actor)
@@ -262,6 +263,8 @@ def download(batch_id: str, format: Literal['zip', 'json'] = 'zip', item_id: str
             (item_id is None or i.id == item_id)]
     if not rows or format == 'json' and len(rows) != 1:
         raise HTTPException(409, '没有可下载的对应成功结果，单个 JSON 需选择一个成功账号')
+    from .external_result_refresh import refresh_expired_results
+    refresh_expired_results(db, batch, actor, rows)
     documents = []
     for item in rows:
         try:

@@ -128,3 +128,32 @@ test('preview validates effective account settings when unused common settings a
   await page.getByRole('alert').filter({ hasText: '新增人数须为 1–100' }).waitFor();
   assert.equal(previews.length, 1, 'invalid effective settings never reach server preview');
 });
+
+test('synchronization step shows real member progress without a failure alert', async t => {
+  const { page } = await fixture(t);
+  let confirmed = 2;
+  await page.route('**/api/provisioning-batches/sync-batch', async route => {
+    const items = Array.from({ length: 60 }, (_, index) => ({ record_id: `record-${index}`,
+      internal_id: `a1-01-${index + 1}`, username: `a1-01-${index + 1}`,
+      state: index < confirmed ? 'completed' : 'queued', phase: 'group_entitlement_pending',
+      propagation_state: index < confirmed ? null : 'waiting', export_state: 'waiting',
+      error: index < confirmed ? null : 'AWS 授权已确认，整体订阅尚未同步，等待只读核对' }));
+    const row = { id: 'child', batch_number: 'a1-01', account_name: 'AWS 1', plan_name: 'Power',
+      group: { id: group.id, name: 'a1-01' }, quantity: 60, phase: 'sso', state: 'running',
+      error: 'AWS 授权已确认，整体订阅尚未同步，等待只读核对', allowed_actions: ['stop'],
+      exports: { csv: true, txt: true, json: true }, stop_policy: { mode: 'none' },
+      export_state: 'waiting', items };
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ id: 'sync-batch',
+      actor_id: 7, state: 'running', phase: 'accounts', error: row.error, accounts: [row], totals: [] }) });
+  });
+  await page.goto(address + '?batch_id=sync-batch');
+  const panel = page.locator('.provisioning-sync-progress');
+  await panel.getByText('已同步 2 / 60 人', { exact: true }).waitFor();
+  assert.equal(await panel.locator('progress').getAttribute('value'), '2');
+  assert.equal(await panel.locator('progress').getAttribute('max'), '60');
+  assert.equal(await page.locator('.provisioning-detail [role="alert"]').count(), 0);
+  assert.equal(await page.locator('.provisioning-detail .badge.failed').count(), 0);
+  confirmed = 14;
+  await panel.getByText('已同步 14 / 60 人', { exact: true }).waitFor();
+  if (process.env.KIRO_SYNC_SCREENSHOT) await panel.screenshot({ path: process.env.KIRO_SYNC_SCREENSHOT });
+});

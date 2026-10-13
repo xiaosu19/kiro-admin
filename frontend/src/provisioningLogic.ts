@@ -51,9 +51,20 @@ export const provisioningStates: Record<string, string> = {
 };
 export const provisioningPhases: Record<string, string> = {
   admitted: '已受理', group_create: '创建分组', group_open: '开通分组', sso: '创建用户与加入分组',
+  sync_wait: '等待同步',
   done: '已完成', group: '准备分组', export: '转换 JSON', password_pending: '核对密码',
   completed: '开通完成', group_access: '确认分组访问', group_policy: '设置分组停止规则', accounts: '处理账号批次',
 };
+export function synchronizationProgress(row: ProvisioningAccount) {
+  const items = row.items || [];
+  if (['completed', 'stopped', 'stopping'].includes(row.state)
+      || row.propagation_state === 'timed_out'
+      || items.some(item => item.propagation_state === 'timed_out'
+        || ['failed', 'needs_review', 'uncertain'].includes(item.state) && item.propagation_state !== 'waiting')
+      || !(row.propagation_state === 'waiting' || items.some(item => item.propagation_state === 'waiting')))
+    return null;
+  return { confirmed: items.filter(item => item.state === 'completed').length, total: row.quantity };
+}
 export const exportStates: Record<string, string> = {
   not_requested: '未选择 JSON', waiting: '等待开通', queued: '等待转换', running: '正在转换', polling: '等待授权结果',
   challenge: '等待官方授权', completed: '转换完成', failed: '转换失败', needs_review: '转换待核对',

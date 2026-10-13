@@ -216,12 +216,22 @@ def fail(item_id, token, error):
             credential = decrypt(item.credential_encrypted) if item.credential_encrypted else {}
             uncertain = bool(getattr(error, 'uncertain', False)) or credential.get('status') in ('unknown', 'candidate')
             failure = classify_failure(error)
-            if failure.transient and not failure.stop and not uncertain and item.retry_count < MAX_AUTOMATIC_RETRIES:
+            saved = decrypt(item.workflow_encrypted) if item.workflow_encrypted else {}
+            refreshing = item.stage == 'refresh_requested' or saved.get('refresh_only')
+            refresh_resume = None
+            if refreshing and isinstance(error, AuthError) and error.sealed_state:
+                candidate = decrypt(error.sealed_state)
+                if (candidate.get('refresh_only') and not candidate.get('inflight')
+                        and candidate.get('stage') in ('refresh', 'profiles', 'usage')):
+                    candidate['status'] = 'ready'
+                    refresh_resume = encrypt(candidate)
+            if (failure.transient and not failure.stop and not uncertain
+                    and (not refreshing or refresh_resume) and item.retry_count < MAX_AUTOMATIC_RETRIES):
                 item.retry_count += 1
                 item.state, item.stage = 'polling', 'retry_wait'
                 item.next_poll_at = now() + timedelta(seconds=RETRY_DELAYS[item.retry_count - 1])
-                item.workflow_encrypted = None
-                if credential.get('current'):
+                item.workflow_encrypted = refresh_resume
+                if not refreshing and credential.get('current'):
                     item.input_encrypted = encrypt({'password': credential['current']})
                 item.error_code, item.error = 'transient_retry', f'连接暂时失败，等待第 {item.retry_count}/5 次自动重试'
             else:
@@ -265,6 +275,8 @@ def run_one(*, lane_id=None, gateway_factory=None, auth_factory=None):
                     if managed and managed.credential_state == 'permanent' and managed.password_encrypted:
                         password = decrypt(managed.password_encrypted)
                     sealed = item.workflow_encrypted
+                    stage = item.stage
+                    result = decrypt(item.result_encrypted) if stage == 'refresh_requested' and item.result_encrypted else None
                     answer = decrypt(item.answer_encrypted) if item.answer_encrypted else None
                     db.expunge(item)
                 guard = partial(authorize, item_id, token)
@@ -278,7 +290,13 @@ def run_one(*, lane_id=None, gateway_factory=None, auth_factory=None):
                 gateway = (gateway_factory or ExternalGateway)(item, configuration, guard)
                 adapter = (auth_factory or ExternalEnterpriseAuth)(gateway,
                     checkpoint=partial(checkpoint, item_id, token))
-                if sealed:
+                if stage == 'refresh_requested':
+                    if result is None:
+                        raise AuthError('invalid_state')
+                    document(item, result)
+                    progress = adapter.begin_result_refresh(item.username, result,
+                        expected_user_id=configuration.get('expected_user_id'))
+                elif sealed:
                     progress = adapter.advance(sealed, answer=answer)
                 else:
                     progress = adapter.begin(item.username, password,

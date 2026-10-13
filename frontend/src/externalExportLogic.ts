@@ -34,4 +34,5 @@ export const externalStages: Record<string, string> = {
   login: "开始登录", signin: "读取登录步骤", workflow: "登录处理中", whoami: "核对用户身份",
   poll: "等待 Token", profiles: "读取真实 Kiro 配置", usage: "核对实际账号数据", done: "转换完成",
   captcha_recognizing: "自动识别中", captcha_verified: "验证成功", retry_wait: "等待自动重试",
+  refresh_requested: "准备更新授权", refresh: "更新授权",
 };
