@@ -38,12 +38,15 @@ API、普通 worker 和认证 worker 必须使用同一实例的数据库与配�
 | `WORKER_CONCURRENCY` | 4 | 1–16 |
 | `AUTH_WORKER_CONCURRENCY` | 2 | 1–8 |
 | `PER_ACCOUNT_CONCURRENCY` | 2 | 1–8 |
+| `AUTH_PER_ACCOUNT_CONCURRENCY` | 跟随 `PER_ACCOUNT_CONCURRENCY` | 1–8 |
 | `CAPTCHA_BROWSER_CONCURRENCY` | 2 | 1–4 |
 | `CAPTCHA_MAX_ATTEMPTS` | 6 | 1–6 |
 
 独立记录按上限并发，同一账号或资源的冲突操作仍需串行和状态核对。可重试的临时失败最多自动重试 5 次；密码错误、锁定、权限不足和结果不明确不会因此重复写入。图像识别默认首次识别加 5 次重试，共最多 6 次，总计最多 60 秒；刷新和重启不会重置预算。已有部署显式设置的识别次数继续生效，可在上述范围内调整。
 
 认证并发限制覆盖完整登录和 OIDC 会话，包括轮询等待；不会一次启动全部账号的授权再逐步排队。经确认的 AWS 订阅传播延迟另设 24 小时等待窗口，按 1、2、5、10 分钟递增、之后每 15 分钟只读核对，页面显示下次核对时间；超时后需核对原任务。
+
+认证会话与浏览器有独立上限。外部请求等待较多时，可先小批量验证 `AUTH_WORKER_CONCURRENCY=4`、`AUTH_PER_ACCOUNT_CONCURRENCY=4`、`CAPTCHA_BROWSER_CONCURRENCY=2`，让轻量请求继续推进，同时最多启动两个浏览器。`PER_ACCOUNT_CONCURRENCY` 仍控制创建与订阅操作；不配置认证专用上限时保留原有行为。调整后检查可用内存、接口限流、验证码成功率和整批耗时，再决定是否保留；并发翻倍不代表速度必然翻倍。
 
 ## 更新
 

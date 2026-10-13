@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     worker_concurrency: int = Field(default=4, ge=1, le=16)
     auth_worker_concurrency: int = Field(default=2, ge=1, le=8)
     per_account_concurrency: int = Field(default=2, ge=1, le=8)
+    auth_per_account_concurrency: int | None = Field(default=None, ge=1, le=8)
     plan_changes_enabled: bool = False
     app_origin: str = "https://console.example.com"
     verify_origin: str = "https://verify.example.com"

@@ -174,7 +174,13 @@ def states(family):
 
 @pytest.mark.parametrize("count", [2, 60])
 @pytest.mark.parametrize("family", ["auth", "external"])
-def test_logins_finish_with_two_session_slots_before_native_deadlines(alice, protocol, family, count):
+@pytest.mark.parametrize("session_slots", [2, 4])
+def test_logins_finish_with_bounded_session_slots_before_native_deadlines(
+        alice, protocol, family, count, session_slots, monkeypatch):
+    monkeypatch.setattr(auth_worker.settings, "auth_worker_concurrency", session_slots)
+    monkeypatch.setattr(auth_worker.settings, "auth_per_account_concurrency", session_slots)
+    # Tuning authentication must not also raise the AWS creation/subscription cap.
+    assert auth_worker.settings.per_account_concurrency == 2
     enqueue(alice, family, count)
     dispatcher = protocol.dispatcher()
     try:
@@ -185,7 +191,7 @@ def test_logins_finish_with_two_session_slots_before_native_deadlines(alice, pro
             if not any(current[s] for s in ("queued", "running", "polling")):
                 break
         assert states(family) == {"completed": count}
-        assert protocol.maximum[0] == 2
+        assert protocol.maximum[0] == min(session_slots, count)
         assert len(protocol.starts) == len(set(protocol.starts)) == count
         assert len(protocol.finished) == count
         assert {"register", "device", "workflow", "whoami", "associate", "poll", "profiles", "usage"} <= protocol.stages
