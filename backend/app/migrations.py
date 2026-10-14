@@ -3,7 +3,7 @@
 from sqlalchemy import inspect, text
 from sqlalchemy.schema import CreateIndex, CreateTable
 
-VERSION = 19
+VERSION = 20
 AUTH_COLUMNS = {
     "credential_state": "VARCHAR(20) NOT NULL DEFAULT 'one_time'",
     "credential_revision": "INTEGER NOT NULL DEFAULT 1",
@@ -125,6 +125,18 @@ def migrate(engine):
                           AutomaticRetry, ExternalExportBatch, ExternalExportItem,
                           GroupExportPreview, AuthExportScope, AuthExportMember):
                 model.__table__.create(conn, checkfirst=True)
+            if sqlite and "console_ai_provider_settings" in tables:
+                ddl = conn.scalar(text("SELECT sql FROM sqlite_master WHERE type='table' AND name='console_ai_provider_settings'"))
+                if "claude_messages_bearer" not in ddl:
+                    # Preserve each tenant's encrypted key and revision verbatim.
+                    table = AiProviderSettings.__table__
+                    replacement = str(CreateTable(table).compile(dialect=engine.dialect)).replace(
+                        "CREATE TABLE console_ai_provider_settings", "CREATE TABLE console_ai_provider_settings_v20", 1)
+                    conn.exec_driver_sql(replacement)
+                    names = ",".join('"' + c.name + '"' for c in table.columns)
+                    conn.exec_driver_sql(f"INSERT INTO console_ai_provider_settings_v20 ({names}) SELECT {names} FROM console_ai_provider_settings")
+                    conn.exec_driver_sql("DROP TABLE console_ai_provider_settings")
+                    conn.exec_driver_sql("ALTER TABLE console_ai_provider_settings_v20 RENAME TO console_ai_provider_settings")
             if "console_aws_accounts" in tables:
                 account_columns = {
                     c["name"] for c in inspector.get_columns("console_aws_accounts")

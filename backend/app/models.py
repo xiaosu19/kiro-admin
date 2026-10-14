@@ -34,7 +34,7 @@ class User(Base):
 class AiProviderSettings(Base):
     __tablename__ = "console_ai_provider_settings"
     __table_args__ = (
-        CheckConstraint("protocol IN ('claude_messages', 'openai_chat', 'openai_responses')"),
+        CheckConstraint("protocol IN ('claude_messages', 'claude_messages_bearer', 'openai_chat', 'openai_responses')"),
         CheckConstraint("timeout_seconds BETWEEN 1 AND 60 AND revision >= 1"),
     )
     user_id: Mapped[int] = mapped_column(ForeignKey("console_users.id"), primary_key=True)

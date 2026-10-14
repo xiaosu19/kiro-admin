@@ -63,6 +63,15 @@ def test_key_preservation_removal_and_optimistic_conflict(alice):
     assert provider_for_actor(2)._api_key == KEY_B
 
 
+def test_bearer_protocol_can_be_saved_without_replacing_tenant_key(alice):
+    assert save(alice).status_code == 200
+    response = save(alice, None, revision=1, protocol='claude_messages_bearer')
+    assert response.status_code == 200, response.text
+    provider = provider_for_actor(2)
+    assert provider.protocol == 'claude_messages_bearer'
+    assert provider._api_key == KEY_A
+
+
 def test_csrf_and_no_global_admin_fallback(alice, bob, admin, monkeypatch):
     from app.config import settings
     monkeypatch.setattr(settings, 'captcha_vision_api_key', SecretStr('synthetic-global-key'))

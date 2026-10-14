@@ -161,7 +161,7 @@ def test_schema17_preserves_schema15_rows_and_original_columns(tmp_path):
     migrate(target)
     migrate(target)
     with target.connect() as db:
-        assert db.exec_driver_sql('SELECT version FROM console_schema_version').scalar() == VERSION == 19
+        assert db.exec_driver_sql('SELECT version FROM console_schema_version').scalar() == VERSION
         assert db.exec_driver_sql('PRAGMA foreign_key_check').fetchall() == []
         for table, columns in originals.items():
             if table == 'console_schema_version': continue
