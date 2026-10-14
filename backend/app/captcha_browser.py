@@ -276,8 +276,16 @@ class _ProxyHTTP:
                         except ValueError:
                             raise BrowserChallengeError("captcha_invalid_response") from None
                     content = bytearray()
+                    next_guard = time.monotonic() + 0.2
                     async for chunk in response.aiter_bytes(chunk_size=16384):
-                        self.gateway._check_proxy()
+                        # Rechecking the full durable account/group scope for
+                        # every 16 KiB turns one SDK download into hundreds of
+                        # database reads. Keep the same bounded cancellation
+                        # interval as the monitor, plus unconditional checks
+                        # before the request and before returning its body.
+                        if time.monotonic() >= next_guard:
+                            self.gateway._check_proxy()
+                            next_guard = time.monotonic() + 0.2
                         _remaining(self.deadline)
                         self.transferred += len(chunk)
                         if len(content) + len(chunk) > response_limit or self.transferred > MAX_TRANSFER:

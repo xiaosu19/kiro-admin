@@ -1693,3 +1693,42 @@ def test_real_authenticated_socks_dns_tls_and_total_wire_deadline(socks_server, 
         assert status == 200 and json.loads(content)["Password"] == "test-one-time"
     assert socks_server.connections == [("ams.proxy.invalid", 443, 3)]
     assert gateway.checks >= 1
+
+
+@pytest.mark.parametrize("revoke", [None, "during_stream", "last_chunk"])
+def test_sdk_stream_checks_revocation_without_a_database_scan_per_chunk(monkeypatch, revoke):
+    module, gateway = browser_module(), Gateway()
+    clock = [time.monotonic()]
+    monkeypatch.setattr(module, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    failure = RuntimeError("local stream revocation")
+    chunks = []
+
+    class Stream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            for index in range(128):
+                chunks.append(index)
+                if revoke == "during_stream":
+                    clock[0] += 0.03
+                    if index == 2:
+                        gateway.error = failure
+                elif revoke == "last_chunk" and index == 127:
+                    gateway.error = failure
+                yield b"a" * 16384
+
+    async def scenario():
+        transport = module._ProxyHTTP(gateway, {CDN}, clock[0] + 10)
+        async with httpx.AsyncClient(transport=httpx.MockTransport(
+                lambda request: httpx.Response(200, stream=Stream()))) as client:
+            transport.client = client
+            return await transport.fetch("GET", f"https://{CDN}/sdk.js", {}, None)
+
+    if revoke:
+        with pytest.raises(RuntimeError) as caught:
+            asyncio.run(scenario())
+        assert caught.value is failure
+        if revoke == "during_stream":
+            assert len(chunks) <= 7
+    else:
+        status, _, body = asyncio.run(scenario())
+        assert status == 200 and len(body) == 2 * 1024 * 1024
+        assert gateway.checks == 2
