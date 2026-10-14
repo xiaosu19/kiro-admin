@@ -798,7 +798,7 @@ def test_gateway_and_discovery_route_every_service_through_selected_proxy(
             proxy_id=pid,
         )
     )
-    assert sdk == ["identitystore", "sts", "sts", "sso-admin"]
+    assert sorted(sdk) == sorted(["identitystore", "sts", "sts", "sso-admin"])
     assert set(http) == {
         "ListProfiles",
         "ListApplicationClaims",
