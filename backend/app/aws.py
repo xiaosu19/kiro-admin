@@ -214,10 +214,19 @@ class AwsGateway:
         except ProxyUnavailable as exc:
             raise AwsFailure(str(exc)) from None
         self.session = make_session(**decrypt(account.credentials_encrypted))
-        self.identity = self._client(
-            "identitystore",
-            region_name=account.region,
-        )
+        self._identity = None
+
+    @property
+    def identity(self):
+        # Native login/OIDC steps usually never use Identity Store. Loading its
+        # botocore model on every durable step wastes CPU on small instances.
+        if self._identity is None:
+            self._identity = self._client("identitystore", region_name=self.account.region)
+        return self._identity
+
+    @identity.setter
+    def identity(self, value):
+        self._identity = value
 
     def _check_proxy(self):
         try:

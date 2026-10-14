@@ -521,7 +521,9 @@ def _run_claimed(job_id, token, gateway_factory, auth_factory, identity_factory)
     finally:
         if adapter and hasattr(adapter, "close"):
             adapter.close()
-        if gateway and hasattr(gateway, "identity"):
+        if gateway and hasattr(gateway, "close"):
+            gateway.close()
+        elif gateway and hasattr(gateway, "identity"):
             gateway.identity.close()
 
 

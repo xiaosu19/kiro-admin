@@ -22,6 +22,26 @@ def gateway():
         return aws.AwsGateway(db.get(AwsAccount, 1))
 
 
+def test_identity_client_is_created_only_for_identity_store_operations(monkeypatch):
+    calls, closed = [], []
+    client = SimpleNamespace(close=lambda: closed.append(True))
+
+    def create(instance, service, **kwargs):
+        calls.append((service, kwargs))
+        instance._clients.append(client)
+        return client
+
+    monkeypatch.setattr(aws.AwsGateway, "_client", create)
+    unused = gateway()
+    unused.close()
+    assert calls == [] and closed == []
+    used = gateway()
+    assert used.identity is client and used.identity is client
+    assert calls == [("identitystore", {"region_name": "us-east-1"})]
+    used.close()
+    assert closed == [True]
+
+
 def test_signed_password_protocol_and_no_redirect(monkeypatch):
     def post(url, **kw):
         assert url == "https://up.sso.us-east-1.amazonaws.com/"
