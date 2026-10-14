@@ -158,6 +158,23 @@ def test_shutdown_finishes_slow_graceful_browser_close(shared_browser, monkeypat
     assert closed == [True] and not contexts[0][0].is_connected()
 
 
+def test_busy_context_close_does_not_retire_healthy_shared_browser(shared_browser, monkeypatch):
+    from playwright.async_api import BrowserContext
+    install, contexts, launches = shared_browser
+    install()
+    original = BrowserContext.close
+
+    async def close(context, *args, **kwargs):
+        await asyncio.sleep(0.15)
+        return await original(context, *args, **kwargs)
+
+    monkeypatch.setattr(BrowserContext, 'close', close)
+    for _ in range(2):
+        assert run(browser_module(), Gateway(), Vision(), lambda: None) == 'official-fixture-access-code'
+    assert len(launches) == 1
+    assert all(not context.pages for _, context, _ in contexts)
+
+
 def test_provider_timeout_closes_only_its_context(shared_browser):
     install, contexts, launches = shared_browser
     install()

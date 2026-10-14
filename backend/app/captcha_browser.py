@@ -752,7 +752,11 @@ async def _solve(challenge, gateway, provider, deadline, before_recognition, run
                 context_closed = context is None
                 for resource in (context, None if shared_lease else browser):
                     if resource is not None:
-                        closed = await _cleanup_call(resource.close, hard_deadline)
+                        # Closing several contexts on a busy shared driver can
+                        # take more than 80 ms. Allow a bounded graceful close
+                        # before retiring the browser and stalling new leases.
+                        maximum = 0.4 if shared_lease and resource is context else 0.08
+                        closed = await _cleanup_call(resource.close, hard_deadline, maximum=maximum)
                         if resource is context:
                             context_closed = closed
                 if http is not None and getattr(http, "client", None) is not None:
