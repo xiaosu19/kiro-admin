@@ -110,7 +110,7 @@ export function AuthBatchView({ batch, busy, onAction, onDownload, onChallenge }
     </div>}
     {batch.kind === "json_export" && <>
       <p className="muted">当前密码类型显示账号已保存的凭据。仅订阅仍有效的账号可导出；若 AWS 要求首次登录修改密码，会先保存永久密码，再生成 JSON。已有永久密码会保留。</p>
-      {live ? <p className="muted">全部处理结束后，可下载成功结果；{batch.group_scope || batch.group_id ? "同组用户合并为分组名.json" : "用户名.json 统一放在一个文件夹内"}，打包为 ZIP。不包含未成功的 {batch.failure_count} 人。下载后结果会清除。</p> : <p className="info-note">{batch.state === "downloaded" ? "此批次已经下载。" : batch.state === "expired" ? "此批次已过期。" : "此批次已取消。"}结果已清除，无法再次下载；如需文件，请重新选择用户生成。</p>}
+      {live ? <p className="muted">全部处理结束后开始计算下载保留时间，可稍后回来下载；{batch.group_scope || batch.group_id ? "同组用户合并为分组名.json" : "用户名.json 统一放在一个文件夹内"}，打包为 ZIP。不包含未成功的 {batch.failure_count} 人。请在下载截止前保存，下载后结果会清除。</p> : <p className="info-note">{batch.state === "downloaded" ? "此批次已经下载。" : batch.state === "expired" ? "此批次已过期。" : "此批次已取消。"}结果已清除，无法再次下载；如需文件，请重新选择用户生成。</p>}
       {batchCanDownload(batch) && <button className="primary" disabled={busy} onClick={onDownload}>下载 {batch.success_count} 人的 JSON（ZIP）</button>}
     </>}
     {batch.kind !== "json_export" && <p className="muted">每位用户单独处理。失败时也可能已生成一次性密码，请以当前密码类型和错误提示为准；已成功的密码修改不会因取消而恢复。</p>}

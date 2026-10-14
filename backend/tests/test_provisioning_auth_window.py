@@ -147,6 +147,46 @@ def test_parent_refreshes_original_oidc_job_without_reset_or_relogin(alice, gate
     assert AuthGateway.resets == resets and gateway.events == writes
 
 
+def test_manual_download_refreshes_original_tokens_without_relogin(alice):
+    from test_auth_batches import admission, record
+
+    RefreshableAuth.starts = RefreshableAuth.refreshes = 0
+    records = [record(), record()]
+    batch = admission(alice, records).json()
+    drain(RefreshableAuth, AuthGateway)
+    with SessionLocal() as db:
+        job = db.scalar(select(models.AuthJob).where(models.AuthJob.record_id == records[0].id))
+        job_id = job.id
+    expire_result({'auth_job_id': job_id})
+    path = f"/api/auth-batches/{batch['id']}/download"
+    assert alice.post(path).status_code == 409
+    drain(RefreshableAuth, AuthGateway)
+    response = alice.post(path)
+    assert response.status_code == 200 and response.headers['x-export-count'] == '2'
+    assert RefreshableAuth.starts == 2 and RefreshableAuth.refreshes == 1
+
+
+def test_completed_parent_keeps_all_results_for_two_hours(alice, gateway, monkeypatch):
+    monkeypatch.setattr(auth_batches.settings, 'auth_download_ttl_seconds', 7200)
+    parent = drive(admit(alice, intent(quantity=2)).json(), alice)
+    drain(RefreshableAuth, AuthGateway)
+    items = parent['accounts'][0]['items']
+    with SessionLocal() as db:
+        batches = [db.get(models.AuthBatch, item['auth_batch_id']) for item in items]
+        end = max(batch.completed_at for batch in batches)
+        deadline = batches[0].download_expires_at
+        assert abs((deadline - end).total_seconds() - 7200) < 2
+        assert all(batch.download_expires_at == deadline for batch in batches)
+    monkeypatch.setattr(auth_batches, 'now', lambda: end + timedelta(hours=1, minutes=59))
+    auth_jobs.expire_batches()
+    with SessionLocal() as db:
+        assert all(db.get(models.AuthSecret, item['auth_job_id']).result_encrypted for item in items)
+    monkeypatch.setattr(auth_batches, 'now', lambda: deadline + timedelta(seconds=1))
+    auth_jobs.expire_batches()
+    with SessionLocal() as db:
+        assert all(db.get(models.AuthSecret, item['auth_job_id']).result_encrypted is None for item in items)
+
+
 def test_failed_refresh_is_terminal_and_does_not_restart_login(alice, gateway):
     parent = drive(admit(alice, intent(quantity=2)).json(), alice)
     drain(RefreshableAuth, AuthGateway)

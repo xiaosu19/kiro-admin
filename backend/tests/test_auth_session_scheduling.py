@@ -174,7 +174,7 @@ def states(family):
 
 @pytest.mark.parametrize("count", [2, 60])
 @pytest.mark.parametrize("family", ["auth", "external"])
-@pytest.mark.parametrize("session_slots", [2, 4, 10])
+@pytest.mark.parametrize("session_slots", [2, 4, 10, 20])
 def test_logins_finish_with_bounded_session_slots_before_native_deadlines(
         alice, protocol, family, count, session_slots, monkeypatch):
     monkeypatch.setattr(auth_worker.settings, "auth_worker_concurrency", session_slots)
@@ -270,7 +270,10 @@ def test_two_sessions_really_overlap_without_starting_a_third(alice, protocol):
         dispatcher.close(wait=True)
 
 
-def test_five_accounts_rotate_at_session_admission_and_keep_per_account_cap(alice, protocol):
+@pytest.mark.parametrize("per_account,total_slots,account_slots", [(3, 8, 2), (60, 20, 4)])
+def test_five_accounts_rotate_at_session_admission_and_keep_per_account_cap(
+        alice, protocol, monkeypatch, per_account, total_slots, account_slots):
+    monkeypatch.setattr(auth_worker.settings, "auth_per_account_concurrency", account_slots)
     with SessionLocal() as db:
         source = db.get(AwsAccount, 1)
         values = {column.name: getattr(source, column.name) for column in AwsAccount.__table__.columns}
@@ -281,27 +284,29 @@ def test_five_accounts_rotate_at_session_admission_and_keep_per_account_cap(alic
         db.commit()
     records, accounts = [], {}
     for aid in range(1, 6):
-        for index in range(3):
+        account_records = []
+        for index in range(per_account):
             item = record(username=f"account-{aid}-{index}")
             records.append(item)
+            account_records.append(item)
             accounts[item.username] = aid
             with SessionLocal() as db:
                 db.get(Subscription, item.id).aws_account_id = aid
                 db.commit()
-    assert admission(alice, records).status_code == 202
-    dispatcher = protocol.dispatcher(max_workers=8)
+        assert admission(alice, account_records).status_code == 202
+    dispatcher = protocol.dispatcher(max_workers=total_slots)
     try:
-        assert step(dispatcher) == 8
+        assert step(dispatcher) == total_slots
         assert set(accounts[name] for name in protocol.starts) == set(range(1, 6))
-        for _ in range(150):
+        for _ in range(800):
             active_accounts = Counter(accounts[name] for name in protocol.active)
-            assert max(active_accounts.values(), default=0) <= 2
-            assert len(protocol.active) <= 8
+            assert max(active_accounts.values(), default=0) <= account_slots
+            assert len(protocol.active) <= total_slots
             step(dispatcher)
             protocol.clock[0] += 5
-            if len(protocol.finished) == 15:
+            if len(protocol.finished) == len(records):
                 break
-        assert states("auth") == {"completed": 15}
+        assert states("auth") == {"completed": len(records)}
     finally:
         dispatcher.close(wait=True)
 

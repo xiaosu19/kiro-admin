@@ -232,8 +232,13 @@ def download_summary(children, items, batches, ops):
             excluded += 1
         else:
             waiting += 1
+    deadlines = [batches[i.auth_batch_id].download_expires_at for i in items
+                 if i.account_batch_id in requested and i.auth_batch_id in batches
+                 and batches[i.auth_batch_id].state == 'active'
+                 and batches[i.auth_batch_id].download_expires_at]
     return {'ready': bool(included and not waiting and not consumed), 'available_count': included,
-            'excluded_count': excluded, 'waiting_count': waiting, 'consumed_count': consumed, 'requested': bool(requested)}
+            'excluded_count': excluded, 'waiting_count': waiting, 'consumed_count': consumed, 'requested': bool(requested),
+            'download_expires_at': min(deadlines) if deadlines and not waiting else None}
 
 
 def download(db, actor, request, batch_id, account_batch_id=None):

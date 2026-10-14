@@ -512,7 +512,7 @@ def download(
 
     batch = batch_owned(db, batch_id, actor)
     require_live(db, batch)
-    included, excluded = zip_results(db, batch)
+    included, excluded = zip_results(db, batch, refresh_expired=True)
     if not included:
         db.commit()
         raise HTTPException(409, "没有成功的 JSON 结果可导出")

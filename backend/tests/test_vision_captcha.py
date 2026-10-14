@@ -395,6 +395,9 @@ def test_vision_settings_default_to_disabled_and_bounded(monkeypatch):
         {"captcha_total_timeout_seconds": 61},
         {"captcha_browser_concurrency": 0},
         {"captcha_browser_concurrency": 11},
+        {"captcha_browser_concurrency": 21, "captcha_browser_reuse": True},
+        {"auth_worker_concurrency": 21},
+        {"auth_per_account_concurrency": 21},
     ],
 )
 def test_settings_reject_unbounded_automation(options):
@@ -411,3 +414,13 @@ def test_recognition_attempt_limit_can_be_lowered_within_six(limit):
 
     configuration = Settings(_env_file=None, captcha_max_attempts=limit)
     assert configuration.captcha_max_attempts == limit
+
+
+def test_twenty_sessions_require_bounded_shared_browser_contexts():
+    from app.config import Settings
+
+    config = Settings(_env_file=None, auth_worker_concurrency=20,
+                      auth_per_account_concurrency=20, captcha_browser_concurrency=20,
+                      captcha_browser_reuse=True)
+    assert config.auth_worker_concurrency == config.captcha_browser_concurrency == 20
+    assert config.auth_download_ttl_seconds == 7200

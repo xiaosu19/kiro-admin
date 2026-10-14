@@ -19,7 +19,7 @@ export function ExternalBatchTable({ batch, busy, onAction, onDownload, onChalle
   return <><p role="status">共 {batch.total} 人 · 成功 {batch.success_count} · 未成功 {batch.failure_count}</p>
     <p className="muted">提交：{date(batch.created_at)} · 任务截止：{date(batch.expires_at)}{batch.download_expires_at && <> · 下载截止：{date(batch.download_expires_at)}</>}</p>
     {batch.download_ready && <button className="primary" disabled={busy} onClick={() => onDownload()}>下载成功结果 JSON ZIP</button>}
-    <p className="muted">只导出实际成功且通过订阅校验的 Token。外部账号须由 AWS 用量响应确认受支持的付费方案。批量 ZIP 内只有一个文件夹，按用户名分别保存 JSON。下载后对应结果会清除；单个结果可直接下载 JSON。</p>
+    <p className="muted">只导出实际成功且通过订阅校验的 Token。外部账号须由 AWS 用量响应确认受支持的付费方案。批量 ZIP 内只有一个文件夹，按用户名分别保存 JSON。整批结束后开始计算下载保留时间，可离开页面稍后回来下载；下载后对应结果会清除，单个结果可直接下载 JSON。</p>
     <div className="table-wrap"><table><thead><tr><th>用户 / 登录入口</th><th>进度</th><th>操作</th></tr></thead><tbody>
       {batch.items?.map(item => <tr key={item.id}><td>{item.username}<small>{item.portal_url}</small></td><td>{item.state === "downloaded" ? "已下载并清理" : authStateLabel[item.state] || item.state}
         {item.state === "running" && <small>{externalStages[item.stage] || "处理账号"}</small>}

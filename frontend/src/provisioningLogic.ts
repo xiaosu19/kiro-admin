@@ -16,7 +16,7 @@ export interface AccountIntent {
 }
 export interface ProvisioningBody { accounts: AccountIntent[] }
 export interface ProvisioningIntent extends ProvisioningBody { request_key: string; preview_fingerprint: string }
-export interface JsonDownload { ready: boolean; requested: boolean; available_count: number; excluded_count: number; waiting_count: number; consumed_count: number }
+export interface JsonDownload { ready: boolean; requested: boolean; available_count: number; excluded_count: number; waiting_count: number; consumed_count: number; download_expires_at?: string | null }
 export interface Recovery { kind: string; method: string; path: string; body?: Record<string, unknown>; requires_request_key?: boolean; read_only: boolean }
 export interface ProvisioningItem extends RetryProgress {
   record_id: string; internal_id: string; position: number; username: string; email: string;

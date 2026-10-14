@@ -16,15 +16,15 @@ class Settings(BaseSettings):
     aws_timeout: int = 30
     worker_lease_seconds: int = 180
     worker_concurrency: int = Field(default=4, ge=1, le=16)
-    auth_worker_concurrency: int = Field(default=2, ge=1, le=16)
+    auth_worker_concurrency: int = Field(default=2, ge=1, le=20)
     per_account_concurrency: int = Field(default=2, ge=1, le=8)
-    auth_per_account_concurrency: int | None = Field(default=None, ge=1, le=16)
+    auth_per_account_concurrency: int | None = Field(default=None, ge=1, le=20)
     plan_changes_enabled: bool = False
     app_origin: str = "https://console.example.com"
     verify_origin: str = "https://verify.example.com"
     auth_allow_local_origins: bool = False
     auth_batch_ttl_hours: int = Field(default=72, ge=1, le=168)
-    auth_download_ttl_seconds: int = Field(default=900, ge=30, le=3600)
+    auth_download_ttl_seconds: int = Field(default=7200, ge=30, le=7200)
     auth_worker_lease_seconds: int = Field(default=180, ge=60, le=900)
     auth_worker_lock_path: Path | None = None
     captcha_vision_api_key: SecretStr = Field(default=SecretStr(""), repr=False)
@@ -33,13 +33,15 @@ class Settings(BaseSettings):
     captcha_vision_timeout_seconds: float = Field(default=20, gt=0, le=60)
     captcha_max_attempts: int = Field(default=6, ge=1, le=6)
     captcha_total_timeout_seconds: float = Field(default=60, ge=5, le=60)
-    captcha_browser_concurrency: int = Field(default=2, ge=1, le=10)
+    captcha_browser_concurrency: int = Field(default=2, ge=1, le=20)
     captcha_browser_reuse: bool = False
     captcha_chromium_executable: str | None = None
     backup_status_path: Path = Path("/var/lib/kiro-console/backup-status.json")
 
     @model_validator(mode="after")
     def isolated_auth_origins(self):
+        if self.captcha_browser_concurrency > 10 and not self.captcha_browser_reuse:
+            raise ValueError("More than 10 CAPTCHA contexts requires CAPTCHA_BROWSER_REUSE=true")
         parsed = []
         for value in (self.app_origin, self.verify_origin):
             p = urlsplit(value)

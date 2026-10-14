@@ -105,7 +105,7 @@ class BrowserRuntime:
             if remaining:
                 await asyncio.wait(remaining, timeout=0.2)
         try:
-            asyncio.run_coroutine_threadsafe(cleanup(), self.loop).result(timeout=2)
+            asyncio.run_coroutine_threadsafe(cleanup(), self.loop).result(timeout=4)
         except concurrent.futures.TimeoutError:
             pass
         finally:

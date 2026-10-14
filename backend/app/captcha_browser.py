@@ -611,10 +611,13 @@ async def _launch_browser(deadline):
 
 async def _dispose_browser(resources):
     manager, browser, group = resources
-    deadline = time.monotonic() + 0.5
+    # A shared browser can have just closed twenty renderer processes. Allow
+    # its graceful close handshake to finish before falling back to owned-PID
+    # cleanup; the caller's deadline still bounds its own wait independently.
+    deadline = time.monotonic() + 2
     if browser:
-        await _cleanup_call(browser.close, deadline, maximum=0.2)
-    await _cleanup_call(lambda: manager.__aexit__(None, None, None), deadline)
+        await _cleanup_call(browser.close, deadline, maximum=1.5)
+    await _cleanup_call(lambda: manager.__aexit__(None, None, None), deadline, maximum=0.3)
     await _stop_owned_driver(manager, browser, group, deadline)
 
 

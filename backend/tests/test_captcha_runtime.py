@@ -43,7 +43,8 @@ def test_sequential_contexts_do_not_share_storage_or_cookies(shared_browser):
     assert all(not context.pages for _, context, _ in contexts)
 
 
-def test_ten_parallel_challenges_have_distinct_results_and_one_browser(shared_browser):
+@pytest.mark.parametrize("concurrency", [10, 20])
+def test_parallel_challenges_have_distinct_results_and_one_browser(shared_browser, concurrency):
     install, contexts, launches = shared_browser
 
     class DistinctWidget(Widget):
@@ -61,7 +62,7 @@ def test_ten_parallel_challenges_have_distinct_results_and_one_browser(shared_br
         async def arecognize(self, *args, **kwargs):
             entered.append(self.answer)
             deadline = time.monotonic() + 5
-            while len(entered) < 10 and time.monotonic() < deadline:
+            while len(entered) < concurrency and time.monotonic() < deadline:
                 await asyncio.sleep(0.01)
             simultaneous.append(sum(bool(context.pages) for _, context, _ in contexts))
             return await super().arecognize(*args, **kwargs)
@@ -70,10 +71,10 @@ def test_ten_parallel_challenges_have_distinct_results_and_one_browser(shared_br
         answer = f"A7b{index:02}"
         return run(browser_module(), Gateway(), OverlappingVision(answer), lambda: None, seconds=15)
 
-    with ThreadPoolExecutor(max_workers=10) as pool:
-        results = list(pool.map(solve, range(10)))
-    assert results == [f"official-A7b{index:02}" for index in range(10)]
-    assert len(launches) == 1 and len(contexts) == 10 and max(simultaneous) == 10
+    with ThreadPoolExecutor(max_workers=concurrency) as pool:
+        results = list(pool.map(solve, range(concurrency)))
+    assert results == [f"official-A7b{index:02}" for index in range(concurrency)]
+    assert len(launches) == 1 and len(contexts) == concurrency and max(simultaneous) == concurrency
     assert all(not context.pages for _, context, _ in contexts)
 
 
@@ -136,6 +137,25 @@ def test_browser_rotates_after_bounded_use(shared_browser, monkeypatch):
         run(browser_module(), Gateway(), Vision(), lambda: None)
     assert len(launches) == 2
     assert not contexts[0][0].is_connected() and contexts[-1][0].is_connected()
+
+
+def test_shutdown_finishes_slow_graceful_browser_close(shared_browser, monkeypatch):
+    from app import captcha_runtime
+    from playwright.async_api import Browser
+    install, contexts, _ = shared_browser
+    install()
+    run(browser_module(), Gateway(), Vision(), lambda: None)
+    closed = []
+    original = Browser.close
+
+    async def close(browser, *args, **kwargs):
+        await asyncio.sleep(0.35)
+        await original(browser, *args, **kwargs)
+        closed.append(True)
+
+    monkeypatch.setattr(Browser, 'close', close)
+    captcha_runtime.shutdown()
+    assert closed == [True] and not contexts[0][0].is_connected()
 
 
 def test_provider_timeout_closes_only_its_context(shared_browser):

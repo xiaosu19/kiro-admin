@@ -169,7 +169,7 @@ export function ProvisioningDownloads({ actorId, batch, account, disabled, onDow
     }]} />}
     <button type="button" className="secondary" disabled={disabled} onClick={() => onDownload({ path: `/provisioning-batches/report?${account ? `account_batch_id=${encodeURIComponent(account.id)}` : `batch_id=${encodeURIComponent(batch.id)}`}`, method: 'GET' })}>下载批次报告</button>
     {actorId === batch.actor_id && (account ? account.exports.json : meta?.requested) && <button type="button" className="secondary" disabled={disabled || !meta?.ready} onClick={() => onDownload({ path: `/provisioning-batches/${encodeURIComponent(batch.id)}${account ? `/accounts/${encodeURIComponent(account.id)}` : ''}/download`, method: 'POST' })}>下载 JSON ZIP</button>}
-  </div>{meta?.requested && actorId === batch.actor_id && <p className="muted">JSON：可下载 {meta.available_count} 项；等待 {meta.waiting_count} 项；排除 {meta.excluded_count} 项。{meta.consumed_count > 0 ? '部分结果已下载并清理，完整 ZIP 不可再生成；可分别下载剩余账号批次。' : '全部任务结束后可下载成功结果；下载后认证结果会清理。'}</p>}</div>;
+  </div>{meta?.requested && actorId === batch.actor_id && <p className="muted">JSON：可下载 {meta.available_count} 项；等待 {meta.waiting_count} 项；排除 {meta.excluded_count} 项。{meta.consumed_count > 0 ? '部分结果已下载并清理，完整 ZIP 不可再生成；可分别下载剩余账号批次。' : '全部任务结束后开始计算下载保留时间，可离开页面稍后回来下载；下载后认证结果会清理。'}{meta.download_expires_at && <> 下载截止：{date(meta.download_expires_at)}。</>}</p>}</div>;
 }
 
 function RecoveryButton({ recovery, disabled, run }: { recovery: Recovery; disabled: boolean; run: (path: string, body?: unknown) => void }) {
