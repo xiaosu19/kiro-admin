@@ -394,7 +394,7 @@ def test_vision_settings_default_to_disabled_and_bounded(monkeypatch):
         {"captcha_total_timeout_seconds": 4},
         {"captcha_total_timeout_seconds": 61},
         {"captcha_browser_concurrency": 0},
-        {"captcha_browser_concurrency": 5},
+        {"captcha_browser_concurrency": 11},
     ],
 )
 def test_settings_reject_unbounded_automation(options):
