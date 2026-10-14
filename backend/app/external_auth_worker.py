@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from functools import partial
 
 from fastapi import HTTPException
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, bindparam, or_, select
 
 from .account_dispatcher import account_fence, resource_fence
 from .auth_automation import automate_challenge
@@ -22,7 +22,7 @@ from .external_enterprise import (
     discover_region,
 )
 from .identity_login import AuthError
-from .models import Subscription, User, now
+from .models import AwsAccount, Binding, ManagedGroup, Subscription, User, now
 from .retry_policy import MAX_AUTOMATIC_RETRIES, RETRY_DELAYS, classify_failure
 from .security import audit, decrypt, encrypt
 from .captcha_errors import captcha_failure
@@ -34,6 +34,20 @@ class LeaseLost(Exception):
 
 class Revoked(Exception):
     pass
+
+
+# Reuse statement shapes, not authorization decisions. Each guard opens a new
+# session and retains the joined rows while the existing scope checks run.
+_AUTHORIZATION_READ = (select(ExternalExportItem, ExternalExportBatch, User)
+    .join(ExternalExportBatch, ExternalExportBatch.id == ExternalExportItem.batch_id)
+    .outerjoin(User, User.id == ExternalExportBatch.actor_id)
+    .where(ExternalExportItem.id == bindparam('external_item_id')))
+_MANAGED_SCOPE_READ = (select(Subscription, AwsAccount, ManagedGroup, Binding)
+    .outerjoin(AwsAccount, AwsAccount.id == Subscription.aws_account_id)
+    .outerjoin(ManagedGroup, ManagedGroup.id == Subscription.group_id)
+    .outerjoin(Binding, and_(Binding.aws_account_id == AwsAccount.id,
+                            Binding.user_id == bindparam('scope_actor_id')))
+    .where(Subscription.id == bindparam('managed_record_id')))
 
 
 def eligible():
@@ -129,7 +143,16 @@ def scope_permitted(db, item, batch):
 
 def authorize(item_id, token):
     with SessionLocal() as db:
-        item, batch = load(db, item_id, token)
+        row = db.execute(_AUTHORIZATION_READ, {'external_item_id': item_id}).first()
+        if not row or row[0].state != 'running' or row[0].lease_token != token:
+            raise LeaseLost()
+        item, batch = row[:2]
+        record_id = json.loads(item.configuration).get('_managed_record_id')
+        # Strong references keep SQLAlchemy's identity map populated for all
+        # checks below; no rows survive this guard's database session.
+        managed = db.execute(_MANAGED_SCOPE_READ, {
+            'managed_record_id': record_id, 'scope_actor_id': batch.actor_id,
+        }).first() if record_id else None
         if item.cancel_requested or batch.state != 'active' or batch.expires_at <= now() or not scope_permitted(db, item, batch):
             raise Revoked()
 

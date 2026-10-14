@@ -158,3 +158,55 @@ def test_expiry_maintenance_does_not_load_sixty_unchallenged_workflows(alice):
     finally:
         event.remove(engine, 'before_cursor_execute', count)
     assert len(statements) <= 6
+
+
+@pytest.mark.parametrize('change', ['binding', 'proxy', 'session', 'cancel'])
+def test_pasted_guard_limits_reads_without_caching_authority(alice, change):
+    from app import external_auth_worker as worker
+    from app.external_auth_models import ExternalExportItem
+    from app.models import Binding, Proxy, User
+    from app.security import encrypt
+    from test_external_auth_batches import admit
+    from test_external_managed_login import managed_record
+
+    managed_record()
+    with SessionLocal() as db:
+        proxy = Proxy(name='guard-budget', host='127.0.0.1', port=1080,
+                      auth_encrypted=encrypt({'username': 'proxy', 'password': 'Synthetic9!'}))
+        db.add(proxy)
+        db.flush()
+        db.get(AwsAccount, 1).proxy_id = proxy.id
+        proxy_id = proxy.id
+        db.commit()
+    batch = admit(alice).json()
+    item_id = batch['items'][0]['id']
+    with SessionLocal() as db:
+        item = db.get(ExternalExportItem, item_id)
+        item.state, item.lease_token = 'running', 'guard-lease'
+        db.commit()
+
+    statements = []
+    def count(_conn, _cursor, sql, *_):
+        if sql.lstrip().upper().startswith('SELECT'):
+            statements.append(sql)
+    event.listen(engine, 'before_cursor_execute', count)
+    try:
+        for _ in range(2):
+            statements.clear()
+            worker.authorize(item_id, 'guard-lease')
+            # The proxy keeps its additional forced refresh before every send.
+            assert len(statements) <= 3
+    finally:
+        event.remove(engine, 'before_cursor_execute', count)
+    with SessionLocal() as db:
+        if change == 'binding':
+            db.delete(db.get(Binding, (2, 1)))
+        elif change == 'proxy':
+            db.get(Proxy, proxy_id).enabled = False
+        elif change == 'session':
+            db.get(User, 2).session_version += 1
+        else:
+            db.get(ExternalExportItem, item_id).cancel_requested = True
+        db.commit()
+    with pytest.raises(worker.Revoked):
+        worker.authorize(item_id, 'guard-lease')
