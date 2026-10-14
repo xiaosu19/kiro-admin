@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     captcha_max_attempts: int = Field(default=6, ge=1, le=6)
     captcha_total_timeout_seconds: float = Field(default=60, ge=5, le=60)
     captcha_browser_concurrency: int = Field(default=2, ge=1, le=10)
+    captcha_browser_reuse: bool = False
     captcha_chromium_executable: str | None = None
     backup_status_path: Path = Path("/var/lib/kiro-console/backup-status.json")
 

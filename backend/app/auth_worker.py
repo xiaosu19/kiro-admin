@@ -59,6 +59,8 @@ def main():
             dispatcher.stopped.wait(0.2)
     finally:
         dispatcher.close(wait=True)
+        from .captcha_runtime import shutdown
+        shutdown()
 
 
 if __name__ == "__main__":

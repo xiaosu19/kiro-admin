@@ -505,6 +505,8 @@ async def _drive(page, http, provider, before_recognition, deadline, failure):
         # Only accept a callback observed before this full scan. A callback that
         # arrives during inspection gets another scan for replacement OTP/MFA UI.
         if state and state.get("accessCode"):
+            http.gateway._check_proxy()
+            _remaining(deadline)
             return state["accessCode"]
         if current:
             try:
@@ -585,9 +587,40 @@ async def _drive(page, http, provider, before_recognition, deadline, failure):
         await asyncio.sleep(min(0.1, _remaining(deadline)))
 
 
-async def _solve(challenge, gateway, provider, deadline, before_recognition):
+async def _launch_browser(deadline):
+    from playwright.async_api import async_playwright
+    manager = async_playwright()
+    browser = group = None
     try:
-        from playwright.async_api import Error as PlaywrightError, TimeoutError as PlaywrightTimeout, async_playwright
+        playwright = await manager.__aenter__()
+        browser = await playwright.chromium.launch(
+            headless=True, executable_path=os.getenv("CAPTCHA_CHROMIUM_EXECUTABLE") or None,
+            proxy={"server": "http://127.0.0.1:9"},
+            args=["--proxy-bypass-list=<-loopback>", "--disable-quic",
+                  "--disable-background-networking", "--disable-dev-shm-usage",
+                  "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+                  "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1"],
+            timeout=min(15000, _remaining(deadline) * 1000),
+        )
+        group = await _browser_process_group(browser, deadline)
+        return manager, browser, group
+    except BaseException:
+        await _dispose_browser((manager, browser, group))
+        raise
+
+
+async def _dispose_browser(resources):
+    manager, browser, group = resources
+    deadline = time.monotonic() + 0.5
+    if browser:
+        await _cleanup_call(browser.close, deadline, maximum=0.2)
+    await _cleanup_call(lambda: manager.__aexit__(None, None, None), deadline)
+    await _stop_owned_driver(manager, browser, group, deadline)
+
+
+async def _solve(challenge, gateway, provider, deadline, before_recognition, runtime=None):
+    try:
+        from playwright.async_api import Error as PlaywrightError, TimeoutError as PlaywrightTimeout
     except ImportError:
         raise BrowserChallengeError("captcha_browser_unavailable") from None
     hard_deadline = deadline
@@ -601,6 +634,7 @@ async def _solve(challenge, gateway, provider, deadline, before_recognition):
     # any credential. Preserve the SDK's real embedding origin for AWS CORS.
     bootstrap_url = "https://" + challenge["region"] + ".signin.aws/platform/kiro-captcha"
     context, browser, http, manager, browser_group, tasks = None, None, None, None, None, []
+    shared_lease = None
     failure = asyncio.get_running_loop().create_future()
     handlers = set()
     active_timeout = asyncio.timeout(_remaining(deadline))
@@ -608,22 +642,15 @@ async def _solve(challenge, gateway, provider, deadline, before_recognition):
         async with active_timeout:
             http = _ProxyHTTP(gateway, hosts, deadline, image_host=image_host, api_host=root)
             await http.__aenter__()
-            manager = async_playwright()
-            playwright = await manager.__aenter__()
             gateway._check_proxy()
             try:
-                browser = await playwright.chromium.launch(
-                    headless=True, executable_path=os.getenv("CAPTCHA_CHROMIUM_EXECUTABLE") or None,
-                    proxy={"server": "http://127.0.0.1:9"},
-                    args=["--proxy-bypass-list=<-loopback>", "--disable-quic",
-                          "--disable-background-networking", "--disable-dev-shm-usage",
-                          "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
-                          "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1"],
-                    timeout=min(15000, _remaining(deadline) * 1000),
-                )
+                if runtime:
+                    shared_lease = await runtime.acquire(_launch_browser, _dispose_browser, deadline)
+                    browser = shared_lease.resources[1]
+                else:
+                    manager, browser, browser_group = await _launch_browser(deadline)
             except PlaywrightError:
                 raise BrowserChallengeError("captcha_browser_unavailable") from None
-            browser_group = await _browser_process_group(browser, deadline)
             context = await browser.new_context(
                 viewport={"width": 960, "height": 720}, locale="en-US",
                 service_workers="block", accept_downloads=False,
@@ -710,15 +737,20 @@ async def _solve(challenge, gateway, provider, deadline, before_recognition):
         raise BrowserChallengeError("captcha_browser_failed") from None
     finally:
         failure.cancel()
-        await _settle(tasks + list(handlers), hard_deadline, cancel=True)
-        for resource in (context, browser):
+        pending = await _settle(tasks + list(handlers), hard_deadline, cancel=True)
+        context_closed = context is None
+        for resource in (context, None if shared_lease else browser):
             if resource is not None:
-                await _cleanup_call(resource.close, hard_deadline)
+                closed = await _cleanup_call(resource.close, hard_deadline)
+                if resource is context:
+                    context_closed = closed
         if http is not None and getattr(http, "client", None) is not None:
             await _cleanup_call(lambda: http.__aexit__(None, None, None), hard_deadline, maximum=0.05)
         if manager is not None:
             await _cleanup_call(lambda: manager.__aexit__(None, None, None), hard_deadline)
             await _stop_owned_driver(manager, browser, browser_group, hard_deadline)
+        if shared_lease:
+            await runtime.release(shared_lease, dirty=bool(pending) or not context_closed)
 
 
 def solve_ams(challenge, gateway, provider, *, deadline, before_recognition):
@@ -733,6 +765,13 @@ def solve_ams(challenge, gateway, provider, *, deadline, before_recognition):
     deadline = min(deadline, time.monotonic() + 60, time.monotonic() + checked["expires_at"] - time.time())
     _remaining(deadline)
     gateway._check_proxy()
+    if settings.captcha_browser_reuse:
+        from .captcha_runtime import shared_runtime
+        try:
+            return shared_runtime().run(lambda runtime: _solve(
+                checked, gateway, provider, deadline, before_recognition, runtime), deadline)
+        except TimeoutError:
+            raise BrowserChallengeError("captcha_timeout") from None
     # Do not let asyncio.run's executor shutdown extend a timed-out DNS lookup.
     # SOCKS target DNS is remote; this also bounds a proxy-host DNS failure.
     loop = asyncio.new_event_loop()
