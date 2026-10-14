@@ -118,7 +118,7 @@ def test_aggregate_json_zip_private_single_use_and_no_provisioning_writes(alice,
     assert response.headers['cache-control'] == 'no-store'
     assert response.headers['x-export-count'] == '2'
     with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
-        assert archive.namelist() == [child['account_number'] + '/' + i['username'] + '.json' for i in child['items']]
+        assert archive.namelist() == [child['account_number'] + '/' + child['group']['name'] + '.json']
     with SessionLocal() as db:
         assert all(s.result_encrypted is None and s.workflow_encrypted is None for s in db.scalars(select(models.AuthSecret)))
         assert db.get(models.PlanCounter, 1).used_count == 2
@@ -227,7 +227,7 @@ def test_parent_zip_ready_two_accounts_and_current_credentials_validation(alice,
     result = alice.post(path)
     assert result.status_code == 200 and result.headers['x-export-count'] == '2'
     with zipfile.ZipFile(io.BytesIO(result.content)) as archive:
-        assert archive.namelist() == [a['account_number'] + '/' + a['items'][0]['username'] + '.json' for a in parent['accounts']]
+        assert archive.namelist() == [a['account_number'] + '/' + a['group']['name'] + '.json' for a in parent['accounts']]
 
 
 def test_waiting_auth_admission_cannot_be_silently_excluded(alice, gateway):

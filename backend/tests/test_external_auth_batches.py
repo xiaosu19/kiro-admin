@@ -127,11 +127,27 @@ def test_single_then_zip_download_partial_results_are_real_private_and_single_us
     archive = alice.post(f"/api/external-auth-batches/{batch['id']}/download")
     assert archive.status_code == 200 and archive.headers['cache-control'] == 'no-store'
     with zipfile.ZipFile(io.BytesIO(archive.content)) as file:
-        assert file.namelist() == ['two.json']
-        assert json.loads(file.read('two.json'))[0]['userId'] == 'actual-user'
+        assert len(file.namelist()) == 1 and file.namelist()[0].endswith('/two.json')
+        assert json.loads(file.read(file.namelist()[0]))[0]['userId'] == 'actual-user'
     assert alice.post(f"/api/external-auth-batches/{batch['id']}/download").status_code == 410
     with SessionLocal() as db:
         assert all(not i.result_encrypted for i in db.scalars(select(ExternalExportItem)))
+
+
+def test_batch_zip_places_all_user_files_under_one_enclosing_folder(alice):
+    rows = [json.loads(TEXT) | {'username': name} for name in ('one', 'two')]
+    batch = admit(alice, json.dumps(rows)).json()
+    completed(batch, 0)
+    completed(batch, 1)
+    response = alice.post(f"/api/external-auth-batches/{batch['id']}/download")
+    assert response.status_code == 200, response.text
+    assert response.headers['x-export-count'] == '2'
+    root = response.headers['content-disposition'].split('filename="')[1].removesuffix('"').removesuffix('.zip')
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        assert archive.namelist() == [root + '/one.json', root + '/two.json']
+        for name in archive.namelist():
+            entries = json.loads(archive.read(name))
+            assert len(entries) == 1 and entries[0]['label'] + '.json' == name.split('/')[1]
 
 
 def test_old_login_cannot_download_or_retry_after_session_revocation(alice):

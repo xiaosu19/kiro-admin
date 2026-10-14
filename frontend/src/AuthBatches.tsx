@@ -99,7 +99,7 @@ export function AuthBatchView({ batch, busy, onAction, onDownload, onChallenge }
     <div className="auth-summary" role="status"><strong>{authKindLabel[batch.kind]} · {batch.total} 人</strong><span>成功 {batch.success_count}</span><span>未成功 {batch.failure_count}</span><span>等待人工验证 {batch.states.challenge || 0}</span></div>
     <p className="muted">提交：{date(batch.created_at)} · 处理截止：{date(batch.expires_at)}{batch.download_expires_at && <> · 下载截止：{date(batch.download_expires_at)}</>}</p>
     {batch.group_scope && <div aria-label="冻结成员范围">
-      <p className="muted">冻结成员范围：{batch.group_scope.groups.length} 个分组，纳入 {batch.group_scope.eligible_count} 人，跳过 {batch.group_scope.skipped_count} 人。ZIP 按提交时的账号编号 / 用户名.json 整理。</p>
+      <p className="muted">冻结成员范围：{batch.group_scope.groups.length} 个分组，纳入 {batch.group_scope.eligible_count} 人，跳过 {batch.group_scope.skipped_count} 人。ZIP 按提交时的账号编号 / 分组名.json 整理，同组成功用户合并在一个文件中。</p>
       <div className="table-wrap"><table><thead><tr><th>原分组 / 账号编号</th><th>预览范围</th><th>当前进度</th></tr></thead><tbody>
         {batch.group_scope.groups.map(group => <tr key={group.id}>
           <td>{group.name}<small>{group.account_name} · {group.account_number}</small></td>
@@ -110,8 +110,8 @@ export function AuthBatchView({ batch, busy, onAction, onDownload, onChallenge }
     </div>}
     {batch.kind === "json_export" && <>
       <p className="muted">当前密码类型显示账号已保存的凭据。仅订阅仍有效的账号可导出；若 AWS 要求首次登录修改密码，会先保存永久密码，再生成 JSON。已有永久密码会保留。</p>
-      {live ? <p className="muted">全部处理结束后，可下载成功结果；每个文件以用户名命名。不包含未成功的 {batch.failure_count} 人。下载后结果会清除。</p> : <p className="info-note">{batch.state === "downloaded" ? "此批次已经下载。" : batch.state === "expired" ? "此批次已过期。" : "此批次已取消。"}结果已清除，无法再次下载；如需文件，请重新选择用户生成。</p>}
-      {batchCanDownload(batch) && <button className="primary" disabled={busy} onClick={onDownload}>下载 {batch.success_count} 份 JSON（ZIP）</button>}
+      {live ? <p className="muted">全部处理结束后，可下载成功结果；{batch.group_scope || batch.group_id ? "同组用户合并为分组名.json" : "用户名.json 统一放在一个文件夹内"}，打包为 ZIP。不包含未成功的 {batch.failure_count} 人。下载后结果会清除。</p> : <p className="info-note">{batch.state === "downloaded" ? "此批次已经下载。" : batch.state === "expired" ? "此批次已过期。" : "此批次已取消。"}结果已清除，无法再次下载；如需文件，请重新选择用户生成。</p>}
+      {batchCanDownload(batch) && <button className="primary" disabled={busy} onClick={onDownload}>下载 {batch.success_count} 人的 JSON（ZIP）</button>}
     </>}
     {batch.kind !== "json_export" && <p className="muted">每位用户单独处理。失败时也可能已生成一次性密码，请以当前密码类型和错误提示为准；已成功的密码修改不会因取消而恢复。</p>}
     {live && <div className="proxy-buttons auth-batch-actions">

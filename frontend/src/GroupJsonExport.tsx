@@ -8,7 +8,7 @@ import { useGroupJsonAdmission, useGroupJsonPreview } from "./groupJsonRequests"
 export function GroupJsonScopePreview({ value }: { value: GroupJsonPreview }) {
   return <div aria-label="整组 JSON 转换范围">
     <p className="info-note">本次 {value.groups.length} 个分组，共 {value.total} 名成员；转换 {value.eligible_count} 人，跳过 {value.skipped_count} 人。仅处理以下冻结名单，之后新增成员需要另建批次。</p>
-    <p className="muted">ZIP 按账号编号 / 用户名.json 整理。只包含成功结果；下载后认证结果会清除。预览有效至 {date(value.expires_at)}。</p>
+    <p className="muted">ZIP 按账号编号 / 分组名.json 整理，同组成功用户合并为一个 JSON 数组。下载后认证结果会清除。预览有效至 {date(value.expires_at)}。</p>
     {value.groups.map(group => <details key={group.id} className="auth-skipped">
       <summary>{group.name} · {group.account_name}（{group.account_number}）· 转换 {group.eligible_count} / {group.total} 人 · 跳过 {group.skipped_count} 人</summary>
       <div className="table-wrap"><table><thead><tr><th>用户名 / 邮箱</th><th>处理范围</th></tr></thead><tbody>

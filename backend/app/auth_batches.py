@@ -27,6 +27,7 @@ from .models import (
     AuthJob,
     AuthSecret,
     AwsAccount,
+    ManagedGroup,
     RecordOperation,
     Subscription,
     User,
@@ -511,12 +512,11 @@ def download(
         raise HTTPException(409, "没有成功的 JSON 结果可导出")
     from .group_export_models import AuthExportScope
     grouped = db.get(AuthExportScope, batch.id)
-    filename = 'kiro-' + batch.id + '.zip'
+    from .provisioning_exports import archive_filename
+    filename = archive_filename(batch.id)
     if grouped:
         from .group_json_exports import grouped_zip
-        from .provisioning_exports import archive_filename
         content = grouped_zip(db, batch, included)
-        filename = archive_filename(batch.id)
         # Serialization is memory-only; revalidate authority before consumption.
         original = [(record.id, encrypted) for record, encrypted in included]
         db.expire_all()
@@ -524,8 +524,14 @@ def download(
         current, current_excluded = zip_results(db, batch)
         if original != [(record.id, encrypted) for record, encrypted in current] or excluded != current_excluded:
             raise HTTPException(409, 'JSON 结果在打包期间已变化，请刷新原批次')
+    elif batch.group_id:
+        from .provisioning_exports import build_zip as grouped_content, safe_component
+        group = db.get(ManagedGroup, batch.group_id)
+        account = db.get(AwsAccount, group.aws_account_id)
+        path = safe_component(account.account_number or account.aws_account_id, 'account-' + str(account.id)) + '/' + safe_component(group.name, 'group-' + group.id) + '.json'
+        content = grouped_content(included, {record.id: path for record, _ in included})
     else:
-        content = build_zip(included)
+        content = build_zip(included, folder=filename[:-4])
     close_batch(db, batch, "downloaded")
     audit(
         db,

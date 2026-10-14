@@ -56,7 +56,7 @@ def unique_components(values):
 
 
 def zip_member_paths(children, items):
-    """Only frozen account codes and item identities determine member paths."""
+    """One merged group document per frozen account batch."""
     folders = []
     for child in children:
         snapshot = json.loads(child.snapshot)
@@ -66,24 +66,29 @@ def zip_member_paths(children, items):
     names = {}
     for child in children:
         selected = [item for item in items if item.account_batch_id == child.id]
-        components = unique_components([(item.record_id, safe_component(item.username,
-            safe_component(item.internal_id, 'user-' + hashlib.sha256(item.record_id.encode()).hexdigest()[:12]))) for item in selected])
-        names.update({record_id: f'{folders[child.id]}/{name}.json' for record_id, name in components.items()})
+        name = safe_component(child.group_name, safe_component(child.batch_number, 'group-' + child.id))
+        names.update({item.record_id: f'{folders[child.id]}/{name}.json' for item in selected})
     return names
 
 
 def build_zip(rows, member_paths):
-    """Use the existing per-user JSON schema; only provisioning paths differ."""
+    """Merge successful account arrays sharing a group path without changing schema."""
     from .auth_export import account_json
     from .security import decrypt
+    documents, seen = {}, set()
+    for record, encrypted in rows:
+        try:
+            if record.id in seen:
+                raise ValueError('duplicate export identity')
+            seen.add(record.id)
+            value = account_json(record, decrypt(encrypted))
+            documents.setdefault(member_paths[record.id], []).extend(value)
+        except (ValueError, KeyError, TypeError):
+            raise HTTPException(409, 'JSON 结果与原用户身份不匹配或已失效，请重新转换') from None
     output = io.BytesIO()
     with zipfile.ZipFile(output, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
-        for record, encrypted in rows:
-            try:
-                value = account_json(record, decrypt(encrypted))
-            except (ValueError, KeyError, TypeError):
-                raise HTTPException(409, 'JSON 结果与原用户身份不匹配或已失效，请重新转换') from None
-            archive.writestr(member_paths[record.id], json.dumps(value, ensure_ascii=False, indent=2).encode())
+        for path, value in documents.items():
+            archive.writestr(path, json.dumps(value, ensure_ascii=False, indent=2).encode())
     return output.getvalue()
 
 

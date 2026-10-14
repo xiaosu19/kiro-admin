@@ -74,7 +74,7 @@ test('five entire groups preview five hundred users, recover exact admission aft
   assert.deepEqual(admissions, [original, original]);
   await page.getByLabel('冻结成员范围').getByRole('cell', { name: /Fixture group 4/ }).waitFor();
   const download = page.waitForEvent('download');
-  await page.getByRole('button', { name: '下载 499 份 JSON（ZIP）', exact: true }).click();
+  await page.getByRole('button', { name: '下载 499 人的 JSON（ZIP）', exact: true }).click();
   assert.equal((await download).suggestedFilename(), '2026-10-11-batch-fixture.zip');
   assert.deepEqual(writes, ['/api/group-json-exports/preview', '/api/group-json-exports', '/api/group-json-exports', '/api/auth-batches/fixture-auth-batch/download']);
 });

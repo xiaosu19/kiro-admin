@@ -96,13 +96,17 @@ def safe_name(value):
     return value[:150] or "account"
 
 
-def build_zip(rows):
+def build_zip(rows, *, folder=None):
     names = [safe_name(r.username) + ".json" for r, _ in rows]
     counts = Counter(name.casefold() for name in names)
+    if folder:
+        from .provisioning_exports import safe_component, unique_components
+        components = unique_components([(r.id, safe_component(r.username, 'user-' + r.id)) for r, _ in rows])
+        names = [folder + '/' + components[r.id] + '.json' for r, _ in rows]
     output = io.BytesIO()
     with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         for (r, encrypted), name in zip(rows, names):
-            if counts[name.casefold()] > 1:
+            if not folder and counts[name.casefold()] > 1:
                 name = f"{r.aws_account_id}/{safe_name(r.id)}/{name}"
             archive.writestr(
                 name,

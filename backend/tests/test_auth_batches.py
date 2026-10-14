@@ -166,8 +166,8 @@ def test_zip_lifecycle_private_array_and_single_use(alice, monkeypatch):
     assert download.headers["x-export-count"] == "1"
     assert download.headers["content-disposition"].startswith('attachment; filename="')
     with zipfile.ZipFile(io.BytesIO(download.content)) as archive:
-        assert archive.namelist() == ["export-user.json"]
-        exported = json.loads(archive.read("export-user.json"))
+        assert len(archive.namelist()) == 1 and archive.namelist()[0].endswith("/export-user.json")
+        exported = json.loads(archive.read(archive.namelist()[0]))
     assert isinstance(exported, list) and len(exported) == 1
     item = exported[0]
     assert item["accessToken"] == "private-access-token"
@@ -734,7 +734,7 @@ def test_partial_zip_counts_collisions_paths_and_cross_region(alice):
         and response.headers["x-excluded-count"] == "1"
     )
     with zipfile.ZipFile(io.BytesIO(response.content)) as zipped:
-        payload = json.loads(zipped.read("shared-name.json"))[0]
+        payload = json.loads(zipped.read(next(name for name in zipped.namelist() if name.endswith("/shared-name.json"))))[0]
         assert payload["authRegion"] == payload["region"] == "eu-west-1"
         assert payload["apiRegion"] == "us-east-1"
     # Same basenames across AWS accounts keep the exact username basename in

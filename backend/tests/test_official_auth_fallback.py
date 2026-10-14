@@ -222,8 +222,8 @@ def test_official_continue_fences_old_credentials_results_and_preserves_current_
     result = alice.post(f"/api/auth-batches/{batch['id']}/download")
     assert result.status_code == 200, result.text
     with zipfile.ZipFile(io.BytesIO(result.content)) as archive:
-        assert archive.namelist() == ["official-user.json"]
-        exported = json.loads(archive.read("official-user.json"))[0]
+        assert len(archive.namelist()) == 1 and archive.namelist()[0].endswith("/official-user.json")
+        exported = json.loads(archive.read(archive.namelist()[0]))[0]
     assert exported["password"] is None and exported["userId"] == r.sso_user_id
     with SessionLocal() as db:
         secret = db.get(AuthSecret, job.id)
@@ -492,7 +492,7 @@ def test_crash_after_official_continue_checkpoint_resumes_polling_without_reset(
     result = alice.post(f"/api/auth-batches/{batch['id']}/download")
     assert result.status_code == 200, result.text
     with zipfile.ZipFile(io.BytesIO(result.content)) as archive:
-        exported = json.loads(archive.read("official-user.json"))[0]
+        exported = json.loads(archive.read(archive.namelist()[0]))[0]
     assert exported["password"] is None and exported["userId"] == r.sso_user_id
     assert Gateway.resets == resets
     with SessionLocal() as db:

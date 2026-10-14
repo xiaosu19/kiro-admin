@@ -127,6 +127,21 @@ def member_paths(items):
     return result
 
 
+def group_archive_paths(items):
+    """Merge by frozen group identity, disambiguating names within each mother account."""
+    from .provisioning_exports import safe_component, unique_components
+    accounts = {item['group']['aws_account_id']: item['folder_number'] for item in items}
+    folders = unique_components([(str(aid), safe_component(number, f'account-{aid}')) for aid, number in sorted(accounts.items())])
+    result = {}
+    for aid in accounts:
+        selected = [item for item in items if item['group']['aws_account_id'] == aid]
+        names = unique_components([(item['group']['id'], safe_component(item['group']['name'], 'group-' + item['group']['id'])) for item in selected])
+        for item in selected:
+            path = folders[str(aid)] + '/' + names[item['group']['id']] + '.json'
+            result.update({m['id']: path for m in item['members'] if m['skip_reason'] is None})
+    return result
+
+
 @router.post('', status_code=202)
 def admit(body: GroupAdmission, request: Request, actor: User = Depends(get_user), db: Session = Depends(get_db)):
     from .auth_batches import BatchInput, admit_auth_batch, batch_view
@@ -229,11 +244,14 @@ def grouped_zip(db, batch, included):
     from .auth_batches import jobs
     from .provisioning_exports import build_zip
     scope = db.get(AuthExportScope, batch.id)
-    expected = member_paths(json.loads(scope.snapshot))
+    snapshot = json.loads(scope.snapshot)
+    expected = member_paths(snapshot)
     members = list(db.scalars(select(AuthExportMember).where(AuthExportMember.batch_id == batch.id)))
     paths = {m.record_id: m.member_path for m in members}
     if (paths != expected or {job.record_id for job in jobs(db, batch)} != set(expected)
             or any(record.id not in paths for record, _ in included)
             or len(set(paths.values())) != len(paths)):
         raise HTTPException(409, '原分组 JSON 文件映射已变化，请重新转换')
-    return build_zip(included, paths)
+    # Keep checking the original per-user mapping so pre-upgrade tasks remain
+    # valid; archive grouping never changes their identity or authorization.
+    return build_zip(included, group_archive_paths(snapshot))

@@ -131,7 +131,7 @@ test('group scope preview shows every original group and independent eligible an
   value.eligible_count--; value.skipped_count++;
   const html = renderToStaticMarkup(h(GroupJsonScopePreview, { value }));
   assert.match(html, /转换 199 人，跳过 1 人/); assert.match(html, /转换 100 \/ 100 人/); assert.match(html, /转换 99 \/ 100 人/);
-  assert.match(html, /actual-g-two-0/); assert.match(html, /没有可恢复的登录凭据/); assert.match(html, /账号编号 \/ 用户名.json/);
+  assert.match(html, /actual-g-two-0/); assert.match(html, /没有可恢复的登录凭据/); assert.match(html, /账号编号 \/ 分组名.json/);
 });
 
 test('group history and progress keep frozen per-group counts alongside current auth job states', async () => {

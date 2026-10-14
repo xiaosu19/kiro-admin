@@ -157,13 +157,13 @@ def test_partial_group_export_frozen_number_paths_real_schema_and_single_use(ali
     assert '-batch-' in result.headers['content-disposition']
     assert result.headers['x-export-count'] == '2' and result.headers['x-excluded-count'] == '1'
     with zipfile.ZipFile(io.BytesIO(result.content)) as archive:
-        assert set(archive.namelist()) == {'a/actual-0-0.json', 'a/actual-1-0.json'}
+        assert set(archive.namelist()) == {'a/group-0.json', 'a/group-1.json'}
         for name in archive.namelist():
             value = json.loads(archive.read(name))
             assert isinstance(value, list) and len(value) == 1
             assert value[0]['authMethod'] == 'IdC' and value[0]['profileArn']
             assert value[0]['usageData']['daysUntilReset'] == 7
-            assert value[0]['label'] == name.removeprefix('a/').removesuffix('.json')
+            assert value[0]['label'] == name.removeprefix('a/').removesuffix('.json').replace('group-', 'actual-') + '-0'
     with SessionLocal() as db:
         assert all(secret.result_encrypted is None for secret in db.scalars(select(AuthSecret)))
         assert all(not db.get(Subscription, rid).counted for rid in records)
@@ -178,6 +178,45 @@ def test_foreign_groups_and_csrf_cannot_preview_or_admit(alice, bob):
     alice.headers['X-CSRF-Token'] = 'wrong'
     assert preview(alice, groups).status_code == 403
     assert admit(alice, value).status_code == 403
+
+
+def test_groups_merge_all_successful_users_without_cross_group_overlap(alice):
+    groups, records = seed_groups(2, 3)
+    batch = admit(alice, preview(alice, groups).json()).json()
+    drain(DoneAuth, Gateway, limit=30)
+    response = alice.post(f"/api/auth-batches/{batch['id']}/download")
+    assert response.status_code == 200, response.text
+    assert response.headers['x-export-count'] == '6'
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        assert set(archive.namelist()) == {'a/group-0.json', 'a/group-1.json'}
+        for index in range(2):
+            rows = json.loads(archive.read(f'a/group-{index}.json'))
+            assert len(rows) == 3
+            assert {row['id'] for row in rows} == set(records[index * 3:index * 3 + 3])
+            assert {row['label'] for row in rows} == {f'actual-{index}-{position}' for position in range(3)}
+
+
+def test_colliding_group_names_remain_separate_traversal_safe_documents():
+    from app.group_json_exports import group_archive_paths
+    items = [{'group': {'id': str(i), 'aws_account_id': 1, 'name': name}, 'folder_number': '../account',
+              'members': [{'id': str(i), 'skip_reason': None}]} for i, name in enumerate(('../same', '..\\same'))]
+    paths = group_archive_paths(items)
+    assert len(set(paths.values())) == 2
+    assert all(len(path.split('/')) == 2 and '\\' not in path and '..' not in path.split('/') for path in paths.values())
+
+
+def test_existing_single_group_auth_batch_also_merges_group_document(alice):
+    groups, records = seed_groups(quantity=2)
+    response = alice.post('/api/auth-batches', json={'kind': 'json_export', 'record_ids': records,
+        'group_id': groups[0], 'request_key': str(uuid.uuid4())})
+    assert response.status_code == 202, response.text
+    batch = response.json()
+    drain(DoneAuth, Gateway, limit=20)
+    response = alice.post(f"/api/auth-batches/{batch['id']}/download")
+    assert response.status_code == 200, response.text
+    with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+        assert archive.namelist() == ['a/group-0.json']
+        assert {row['id'] for row in json.loads(archive.read('a/group-0.json'))} == set(records)
 
 
 def test_worker_refuses_member_or_proxy_drift_before_constructing_auth(alice):

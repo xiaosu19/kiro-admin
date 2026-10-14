@@ -16,7 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .auth_batches import AnswerInput
-from .auth_export import account_json, safe_name
+from .auth_export import account_json
 from .auth_principals import login_key, managed_configuration, validate_managed
 from .config import settings
 from .database import get_db
@@ -305,15 +305,15 @@ def download(batch_id: str, format: Literal['zip', 'json'] = 'zip', item_id: str
         content = json.dumps(documents[0][1], ensure_ascii=False, indent=2).encode()
         media, filename = 'application/json', 'kiro-account.json'
     else:
+        from .provisioning_exports import archive_filename, safe_component, unique_components
+        filename = archive_filename(batch.id)
+        folder = filename[:-4]
+        names = unique_components([(item.id, safe_component(item.username, 'user-' + item.id)) for item, _ in documents])
         output = io.BytesIO()
         with zipfile.ZipFile(output, 'w', zipfile.ZIP_DEFLATED) as archive:
-            names = [safe_name(i.username).casefold() for i, _ in documents]
             for item, data in documents:
-                name = safe_name(item.username)
-                if names.count(name.casefold()) > 1:
-                    name += '-' + item.id[:8]
-                archive.writestr(name + '.json', json.dumps(data, ensure_ascii=False, indent=2).encode())
-        content, media, filename = output.getvalue(), 'application/zip', 'kiro-accounts.zip'
+                archive.writestr(folder + '/' + names[item.id] + '.json', json.dumps(data, ensure_ascii=False, indent=2).encode())
+        content, media = output.getvalue(), 'application/zip'
     for item, _ in documents:
         item.state = 'downloaded'
         clear(item)

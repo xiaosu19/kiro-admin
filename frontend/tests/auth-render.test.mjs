@@ -38,7 +38,7 @@ test("settled CAPTCHA exposes retry before failure while ongoing verification do
 test("partial batch displays per-account outcomes, excluded count, deadline and explicit unknown reset", () => {
   const html = render(h(AuthBatchView, { batch, ...actions }));
   assert.match(html, /成功 1/); assert.match(html, /未成功 2/);
-  assert.match(html, /下载 1 份 JSON/); assert.match(html, /不包含未成功的 2/);
+  assert.match(html, /下载 1 人的 JSON/); assert.match(html, /不包含未成功的 2/);
   for (const label of ["success-user", "failed-user", "unknown-user", "永久密码", "一次性密码", "密码状态待核对", "明确再次重置", "关闭 MFA", "下载截止"])
     assert.ok(html.includes(label), label);
 });
@@ -52,7 +52,7 @@ test("JSON queue explains current saved password type and subscribed first-login
 test("purged and expired exports direct regeneration without offering another download", () => {
   for (const state of ["downloaded", "expired", "cancelled"]) {
     const html = render(h(AuthBatchView, { batch: { ...batch, state }, ...actions }));
-    assert.match(html, /重新选择用户生成/); assert.doesNotMatch(html, /下载 1 份 JSON/);
+    assert.match(html, /重新选择用户生成/); assert.doesNotMatch(html, /下载 1 人的 JSON/);
   }
 });
 test("closed terminal rows do not claim cancellation is still pending, while running cancellation does", () => {

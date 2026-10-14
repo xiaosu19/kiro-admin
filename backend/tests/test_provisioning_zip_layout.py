@@ -73,8 +73,8 @@ def download(client, parent, child=None):
 
 def assert_members(response, parent, *, excluded=()):
     assert response.status_code == 200, response.text
-    expected = {f"{child['account_number']}/{item['username']}.json": item for child in parent['accounts'] for item in child['items'] if item['record_id'] not in excluded}
-    assert int(response.headers['x-export-count']) == len(expected)
+    expected = {f"{child['account_number']}/{child['group']['name']}.json": [item for item in child['items'] if item['record_id'] not in excluded] for child in parent['accounts']}
+    assert int(response.headers['x-export-count']) == sum(len(items) for items in expected.values())
     assert int(response.headers['x-excluded-count']) == len(excluded)
     assert response.headers['cache-control'] == 'no-store'
     header = response.headers['content-disposition']
@@ -82,17 +82,17 @@ def assert_members(response, parent, *, excluded=()):
     with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
         assert archive.namelist() == list(expected), 'account and numeric item order remain stable'
         assert len({PurePosixPath(name).parts[0] for name in archive.namelist()}) == len(parent['accounts'])
-        for name, item in expected.items():
+        for name, items in expected.items():
             value = json.loads(archive.read(name))
-            assert isinstance(value, list) and len(value) == 1
-            row = value[0]
-            assert row['id'] == item['record_id'] and row['label'] == item['username']
-            assert row['userId'] == 'sso-' + item['record_id']
-            assert row['accessToken'] == 'synthetic-access-' + item['record_id']
-            assert row['refreshToken'] == 'synthetic-refresh-' + item['record_id']
-            assert row['clientSecret'] == 'synthetic-secret-' + item['record_id']
-            assert row['authMethod'] == 'IdC' and row['provider'] == 'Enterprise'
-            assert row['kiro_profile_raw']['profiles'][0]['arn'] == row['profileArn']
+            assert isinstance(value, list) and len(value) == len(items)
+            for row, item in zip(value, items):
+                assert row['id'] == item['record_id'] and row['label'] == item['username']
+                assert row['userId'] == 'sso-' + item['record_id']
+                assert row['accessToken'] == 'synthetic-access-' + item['record_id']
+                assert row['refreshToken'] == 'synthetic-refresh-' + item['record_id']
+                assert row['clientSecret'] == 'synthetic-secret-' + item['record_id']
+                assert row['authMethod'] == 'IdC' and row['provider'] == 'Enterprise'
+                assert row['kiro_profile_raw']['profiles'][0]['arn'] == row['profileArn']
 
 
 @pytest.mark.parametrize('failures', [0, 2])
@@ -175,6 +175,7 @@ def test_unicode_and_malicious_names_are_safe_unique_and_keep_each_json_identity
         for child in parent['accounts']:
             row = db.get(models.ProvisioningAccountBatch, child['id'])
             snapshot = json.loads(row.snapshot)
+            row.group_name = '../分组\\名称'
             snapshot['account_number'] = '../母号\\编号' if row.position == 1 else '..\\母号/编号'
             row.snapshot = json.dumps(snapshot)
             for item_data in child['items']:
@@ -190,7 +191,7 @@ def test_unicode_and_malicious_names_are_safe_unique_and_keep_each_json_identity
     assert response.headers['content-disposition'].isascii()
     with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
         names = archive.namelist()
-        assert len(names) == len({name.casefold() for name in names}) == 4
+        assert len(names) == len({name.casefold() for name in names}) == 2
         assert len({PurePosixPath(name).parts[0] for name in names}) == 2
         assert any('母号' in name for name in names), 'ZIP members preserve readable UTF-8 names'
         for name in names:
@@ -204,9 +205,9 @@ def test_unicode_and_malicious_names_are_safe_unique_and_keep_each_json_identity
 
 def test_missing_account_number_falls_back_to_frozen_real_id_and_header_stays_ascii(monkeypatch):
     children = [SimpleNamespace(id='child-one', aws_account_id=17, account_number='',
-        snapshot=json.dumps({'real_aws_account_id': '123456789012'}))]
+        snapshot=json.dumps({'real_aws_account_id': '123456789012'}), group_name='a-01', batch_number='a-01')]
     items = [SimpleNamespace(record_id='record-one', account_batch_id='child-one', username='..', internal_id='a-01-01')]
-    assert provisioning_exports.zip_member_paths(children, items) == {'record-one': '123456789012/a-01-01.json'}
+    assert provisioning_exports.zip_member_paths(children, items) == {'record-one': '123456789012/a-01.json'}
     monkeypatch.setattr(provisioning_exports, 'now', lambda: datetime(2026, 10, 11))
     filename = provisioning_exports.archive_filename('../中文\r\nInjected: header')
     assert filename.isascii() and re.fullmatch(r'2026-10-11-batch-[a-f0-9]{8}\.zip', filename)
