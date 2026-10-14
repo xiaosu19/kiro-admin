@@ -149,6 +149,9 @@ def test_http_failures_never_redirect_retry_or_expose_provider_data(status, capl
         message("ABCD\x00"),
         message("private-response " + API_KEY),
         message("Answer: ABCD"),
+        message("NoImage"),
+        message("NOIMAGE"),
+        message("SendImage"),
         message("ABCD", stop_reason="max_tokens"),
     ],
 )

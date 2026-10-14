@@ -14,7 +14,7 @@ from .security import audit, decrypt, encrypt, get_user
 from .vision_captcha import DEFAULT_ENDPOINT, DEFAULT_MODEL, VisionError, VisionProvider, normalize_endpoint
 
 router = APIRouter(prefix="/api/ai-settings")
-Protocol = Literal["claude_messages", "openai_chat", "openai_responses"]
+Protocol = Literal["claude_messages", "claude_messages_bearer", "openai_chat", "openai_responses"]
 
 
 class SaveSettings(BaseModel):

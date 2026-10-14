@@ -174,7 +174,8 @@ def test_missing_aggregate_after_write_keeps_reservation_for_readonly_recovery(a
     assert item["state"] == "queued"
     with SessionLocal() as db:
         retry = db.get(AutomaticRetry, ("native", item["operation_id"]))
-        assert retry.mode == "reconcile" and retry.retry_count == 1
+        assert retry.mode == "reconcile" and retry.retry_count == 0
+        assert retry.propagation_check_count == 1 and retry.propagation_started_at
     assert len(native.writes) == 1
     native.effective_rows = None
     due("native", item["operation_id"])

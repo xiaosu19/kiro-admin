@@ -36,9 +36,9 @@ API、普通 worker 和认证 worker 必须使用同一实例的数据库与配�
 | 配置 | 默认 | 范围 |
 | --- | --- | --- |
 | `WORKER_CONCURRENCY` | 4 | 1–16 |
-| `AUTH_WORKER_CONCURRENCY` | 2 | 1–8 |
+| `AUTH_WORKER_CONCURRENCY` | 2 | 1–16 |
 | `PER_ACCOUNT_CONCURRENCY` | 2 | 1–8 |
-| `AUTH_PER_ACCOUNT_CONCURRENCY` | 跟随 `PER_ACCOUNT_CONCURRENCY` | 1–8 |
+| `AUTH_PER_ACCOUNT_CONCURRENCY` | 跟随 `PER_ACCOUNT_CONCURRENCY` | 1–16 |
 | `CAPTCHA_BROWSER_CONCURRENCY` | 2 | 1–4 |
 | `CAPTCHA_MAX_ATTEMPTS` | 6 | 1–6 |
 
@@ -47,6 +47,8 @@ API、普通 worker 和认证 worker 必须使用同一实例的数据库与配�
 认证并发限制覆盖完整登录和 OIDC 会话，包括轮询等待；不会一次启动全部账号的授权再逐步排队。经确认的 AWS 订阅传播延迟另设 24 小时等待窗口，按 1、2、5、10 分钟递增、之后每 15 分钟只读核对，页面显示下次核对时间；超时后需核对原任务。
 
 认证会话与浏览器有独立上限。外部请求等待较多时，可先小批量验证 `AUTH_WORKER_CONCURRENCY=4`、`AUTH_PER_ACCOUNT_CONCURRENCY=4`、`CAPTCHA_BROWSER_CONCURRENCY=2`，让轻量请求继续推进，同时最多启动两个浏览器。`PER_ACCOUNT_CONCURRENCY` 仍控制创建与订阅操作；不配置认证专用上限时保留原有行为。调整后检查可用内存、接口限流、验证码成功率和整批耗时，再决定是否保留；并发翻倍不代表速度必然翻倍。
+
+资源充足时可将认证会话上限逐步提高到 10，浏览器仍使用独立的 1–4 上限。自动图像识别结束且密码状态明确的任务会立即显示“重试验证”，无需等待挑战过期；正在识别、MFA 或密码写入结果未知时不会重启登录。重试沿用现有凭据，不重新重置密码。重新进入 JSON 导出页面会恢复本浏览器中该用户上次查看的任务，服务端历史记录仍可查看所有任务。
 
 ## 更新
 

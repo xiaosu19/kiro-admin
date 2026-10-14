@@ -28,6 +28,7 @@ export function ExternalBatchTable({ batch, busy, onAction, onDownload, onChalle
         <td><div className="row-actions">
           {batch.download_ready && item.state === "completed" && <button className="text-button" disabled={busy} onClick={() => onDownload(item)}>下载此用户 JSON</button>}
           {batch.state === "active" && item.state === "challenge" && <button className="text-button" disabled={busy} onClick={() => onChallenge(item)}>人工处理</button>}
+          {batch.state === "active" && item.state === "challenge" && item.can_retry_challenge && <button className="text-button" disabled={busy || item.cancel_requested} onClick={() => onAction(item, "retry")}>重试验证</button>}
           {batch.state === "active" && ["failed", "needs_review"].includes(item.state) && <button className="text-button" disabled={busy} onClick={() => onAction(item, "retry")}>继续处理</button>}
           {item.credential_recovery_available && ["failed", "needs_review", "cancelled", "expired"].includes(item.state) && <button className="text-button" disabled={busy} onClick={() => onAction(item, "credential-recovery")}>下载凭据恢复信息</button>}
         </div></td></tr>)}

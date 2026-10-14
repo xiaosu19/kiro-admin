@@ -24,7 +24,7 @@ test.before(async () => {
 });
 test.after(async () => { await browser?.close(); await server?.close(); });
 
-async function fixture(t, { admit, download, denied } = {}) {
+async function fixture(t, { admit, download, denied, progress, retry } = {}) {
   const context = await browser.newContext({ acceptDownloads: true }), page = await context.newPage();
   const admissions = [], unexpected = [], errors = [], downloads = [];
   page.setDefaultTimeout(6000); page.on('pageerror', e => errors.push(e.message)); page.on('download', e => downloads.push(e.suggestedFilename()));
@@ -43,8 +43,10 @@ async function fixture(t, { admit, download, denied } = {}) {
       assert.equal(req.method(), 'POST'); assert.equal(req.headers()['x-csrf-token'], 'fixture-csrf');
       if (download) await download();
       await route.fulfill({ status: 200, contentType: 'application/json', headers: { 'Content-Disposition': 'attachment; filename="fixture-user.json"', 'Cache-Control': 'no-store' }, body: '{"fixture":true}' }); return;
+    } else if (path === '/api/external-auth-batches/external-fixture/items/challenge/retry' && retry) {
+      assert.equal(req.headers()['x-csrf-token'], 'fixture-csrf'); body = retry(); status = 202;
     } else if (path === '/api/external-auth-batches/external-fixture') {
-      status = denied?.() ? 403 : 200; body = status === 403 ? { detail: 'Fixture access revoked' } : batch;
+      status = denied?.() ? 403 : 200; body = status === 403 ? { detail: 'Fixture access revoked' } : progress ? progress() : batch;
     } else { unexpected.push(`${req.method()} ${path}`); status = 404; body = { detail: 'Unexpected fixture call' }; }
     await route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(body) });
   });
@@ -75,6 +77,28 @@ test('pasted conversion survives an uncertain admission without retaining passwo
   const finished = page.waitForEvent('download');
   await page.getByRole('button', { name: '下载此用户 JSON', exact: true }).click();
   assert.equal((await finished).suggestedFilename(), 'fixture-user.json'); assert.deepEqual(downloads, ['fixture-user.json']);
+});
+
+test('settled CAPTCHA retry survives leaving the page and reloading before challenge expiry', async t => {
+  let calls = 0;
+  let current = { ...batch, completed_at: null, download_ready: false, success_count: 0, failure_count: 0,
+    items: [{ ...account, id: 'challenge', state: 'challenge', can_retry_challenge: true, retry_count: 0 }] };
+  const { page } = await fixture(t, { progress: () => current, retry: () => {
+    calls++; current = { ...current, items: [{ ...current.items[0], state: 'queued', can_retry_challenge: false }] }; return current;
+  } });
+  await page.goto(`${address}/json-export?source=paste&external_batch_id=external-fixture`);
+  await page.getByRole('button', { name: '重试验证', exact: true }).waitFor();
+  await page.evaluate(() => sessionStorage.setItem('kiro:json-export:last:8', JSON.stringify({ source: 'paste', id: 'other-user-task' })));
+  await page.goto(`${address}/json-export?source=paste`);
+  await page.getByLabel('粘贴账号信息').waitFor();
+  await page.goto(`${address}/json-export`);
+  await page.getByRole('button', { name: '重试验证', exact: true }).waitFor();
+  assert.match(page.url(), /external_batch_id=external-fixture/);
+  await page.reload();
+  await page.getByRole('button', { name: '重试验证', exact: true }).click();
+  await page.getByText('等待处理', { exact: true }).waitFor();
+  assert.equal(calls, 1);
+  assert.equal(await page.getByRole('button', { name: '重试验证', exact: true }).count(), 0);
 });
 
 test('a late JSON download is discarded after the next progress check revokes access', async t => {

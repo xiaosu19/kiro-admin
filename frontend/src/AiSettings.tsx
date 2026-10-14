@@ -3,7 +3,7 @@ import { Link, useLocation } from "react-router-dom";
 import { groupRequest } from "./api";
 import { SearchableSelect } from "./SearchableSelect";
 
-type Protocol = "claude_messages" | "openai_chat" | "openai_responses";
+type Protocol = "claude_messages" | "claude_messages_bearer" | "openai_chat" | "openai_responses";
 interface Settings {
   revision: number;
   protocol: Protocol;
@@ -16,6 +16,7 @@ interface Settings {
 }
 const protocols: [Protocol, string, string][] = [
   ["claude_messages", "Claude Messages", "/messages"],
+  ["claude_messages_bearer", "Claude Messages（Bearer 认证）", "/messages"],
   ["openai_chat", "OpenAI Chat Completions", "/chat/completions"],
   ["openai_responses", "OpenAI Responses", "/responses"],
 ];

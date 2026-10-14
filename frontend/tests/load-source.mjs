@@ -53,6 +53,7 @@ for (const name of [
   "RetryStatus.tsx",
   "AuthSelection.tsx",
   "JsonExport.tsx",
+  "jsonExportNavigation.ts",
   "AiSettings.tsx",
   "GroupJsonExport.tsx",
   "groupJsonRequests.ts",

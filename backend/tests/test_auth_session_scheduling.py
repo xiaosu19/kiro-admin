@@ -174,7 +174,7 @@ def states(family):
 
 @pytest.mark.parametrize("count", [2, 60])
 @pytest.mark.parametrize("family", ["auth", "external"])
-@pytest.mark.parametrize("session_slots", [2, 4])
+@pytest.mark.parametrize("session_slots", [2, 4, 10])
 def test_logins_finish_with_bounded_session_slots_before_native_deadlines(
         alice, protocol, family, count, session_slots, monkeypatch):
     monkeypatch.setattr(auth_worker.settings, "auth_worker_concurrency", session_slots)

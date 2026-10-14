@@ -19,6 +19,7 @@ from .auth_credentials import (
     password_valid,
 )
 from .config import settings
+from .auth_retry import restartable_challenge
 from .database import get_db
 from .lifecycle import allowed, owned, validate_operation
 from .models import (
@@ -233,6 +234,10 @@ def batch_view(db, batch, details=True):
                 "error": op.error,
                 "error_code": j.error_code,
                 "cancel_requested": j.cancel_requested,
+                "can_retry_challenge": op.state == "challenge"
+                and not j.cancel_requested and j.reset_state != "pending"
+                and records[j.record_id].credential_state != "unknown"
+                and restartable_challenge(db.get(AuthSecret, j.id).workflow_encrypted),
                 **retry_view(db, 'auth', j.id, active=op.state in ('queued', 'running', 'polling'), rows=retry_rows, state=op.state),
                 "username": records[j.record_id].username,
                 "owner_id": records[j.record_id].owner_id,
@@ -706,17 +711,32 @@ def retry_item(
     actor: User = Depends(get_user),
     db: Session = Depends(get_db),
 ):
+    from .account_dispatcher import resource_fence
+
+    item_owned(db, batch_id, record_id, actor)
+    # A challenge checkpoint can become visible before its browser closes.
+    # Never restart that login while the old worker still owns the record.
+    with resource_fence("record", record_id) as acquired:
+        if not acquired:
+            raise HTTPException(409, "当前登录步骤正在结束，请稍后重试")
+        return retry_item_locked(batch_id, record_id, body, request, actor, db)
+
+
+def retry_item_locked(batch_id, record_id, body, request, actor, db):
     from .security import decrypt
 
     batch, job, r, op = item_owned(db, batch_id, record_id, actor)
     require_live(db, batch)
-    if op.state not in ("failed", "needs_review") or job.cancel_requested:
-        raise HTTPException(409, "仅失败或待核对用户可以重试")
+    secret = db.get(AuthSecret, job.id)
+    challenge_retry = op.state == "challenge" and restartable_challenge(secret.workflow_encrypted)
+    if (op.state not in ("failed", "needs_review") and not challenge_retry) or job.cancel_requested:
+        raise HTTPException(409, "仅失败、待核对或自动验证已结束的用户可以重试")
+    if challenge_retry and (body.mode != "resume" or job.reset_state == "pending" or r.credential_state == "unknown"):
+        raise HTTPException(409, "密码变更结果待核对，不能直接重试验证")
     if r.active_operation_id not in (None, job.id):
         raise HTTPException(409, "该用户已有其他操作正在处理")
     if job.reset_state == "pending" and body.mode != "new_reset":
         raise HTTPException(409, "一次性密码结果未知，请明确选择再次重置")
-    secret = db.get(AuthSecret, job.id)
     saved = decrypt(secret.workflow_encrypted) if secret.workflow_encrypted else {}
     if (body.mode == 'resume' and job.error_code != 'token_expired'
             and (job.stage == 'refresh_requested' or saved.get('refresh_only'))):

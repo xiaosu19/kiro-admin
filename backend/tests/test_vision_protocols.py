@@ -13,7 +13,7 @@ from test_vision_captcha import API_KEY, PNG, message
 
 
 def response(protocol):
-    if protocol == 'claude_messages':
+    if protocol in ('claude_messages', 'claude_messages_bearer'):
         return message()
     if protocol == 'openai_chat':
         return {'choices': [{'finish_reason': 'stop', 'message': {'role': 'assistant', 'content': 'aB34Zq'}}]}
@@ -25,7 +25,8 @@ def response(protocol):
 
 
 @pytest.mark.parametrize('protocol,suffix', [
-    ('claude_messages', '/messages'), ('openai_chat', '/chat/completions'), ('openai_responses', '/responses'),
+    ('claude_messages', '/messages'), ('claude_messages_bearer', '/messages'),
+    ('openai_chat', '/chat/completions'), ('openai_responses', '/responses'),
 ])
 def test_three_protocols_send_only_image_fixed_instructions_and_own_key(protocol, suffix):
     calls = []
@@ -35,9 +36,14 @@ def test_three_protocols_send_only_image_fixed_instructions_and_own_key(protocol
         body = json.loads(request.content)
         assert body['model'] == 'my-vision-model'
         data_uri = 'data:image/png;base64,' + base64.b64encode(PNG).decode()
-        if protocol == 'claude_messages':
-            assert request.headers['x-api-key'] == API_KEY
-            assert 'authorization' not in request.headers
+        if protocol in ('claude_messages', 'claude_messages_bearer'):
+            if protocol == 'claude_messages':
+                assert request.headers['x-api-key'] == API_KEY
+                assert 'authorization' not in request.headers
+                assert request.headers['anthropic-version'] == '2023-06-01'
+            else:
+                assert request.headers['authorization'] == 'Bearer ' + API_KEY
+                assert 'x-api-key' not in request.headers
             assert body['messages'][0]['content'][0]['source']['data'] == base64.b64encode(PNG).decode()
         else:
             assert request.headers['authorization'] == 'Bearer ' + API_KEY
@@ -89,8 +95,9 @@ def test_unsafe_or_mismatched_endpoint_rejected_before_sending(url):
 
 @pytest.mark.parametrize('base', ['https://vision.example.com', 'https://vision.example.com/',
     'https://vision.example.com/v1', 'https://vision.example.com/v1/messages'])
-def test_normalization_does_not_duplicate_v1_or_protocol(base):
-    assert normalize_endpoint(base, 'claude_messages') == 'https://vision.example.com/v1/messages'
+@pytest.mark.parametrize('protocol', ['claude_messages', 'claude_messages_bearer'])
+def test_normalization_does_not_duplicate_v1_or_protocol(base, protocol):
+    assert normalize_endpoint(base, protocol) == 'https://vision.example.com/v1/messages'
 
 
 def test_dns_checked_once_then_numeric_socket_preserves_host_tls_sni_and_body(monkeypatch):

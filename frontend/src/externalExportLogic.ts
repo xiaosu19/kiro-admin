@@ -7,6 +7,7 @@ export interface ExternalItem {
   state: string; stage: string; error: string | null; error_code: string | null;
   revision: number; retry_count: number; next_poll_at: string | null;
   cancel_requested: boolean; credential_recovery_available: boolean;
+  can_retry_challenge?: boolean;
 }
 export interface ExternalBatch {
   id: string; actor_id: number; request_key: string; state: string;

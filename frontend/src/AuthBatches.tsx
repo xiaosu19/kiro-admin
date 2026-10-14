@@ -132,6 +132,7 @@ export function AuthBatchView({ batch, busy, onAction, onDownload, onChallenge }
         <td><div className="row-actions">
           {live && !item.cancel_requested && <>
             {item.state === "challenge" && <button className="text-button" disabled={busy} onClick={() => onChallenge(item)}>人工验证</button>}
+            {item.state === "challenge" && item.can_retry_challenge && <button className="text-button" disabled={busy} onClick={() => onAction("retry", item)}>重试验证</button>}
             {["failed", "needs_review"].includes(item.state) && (item.requires_new_reset
               ? <button className="text-button" disabled={busy} onClick={() => onAction("new_reset", item)}>明确再次重置</button>
               : <button className="text-button" disabled={busy} onClick={() => onAction("retry", item)}>继续处理</button>)}

@@ -27,6 +27,7 @@ DEFAULT_ENDPOINT = "https://api.anthropic.com/v1/messages"
 DEFAULT_MODEL = "claude-opus-4.6"
 PROTOCOL_PATHS = {
     "claude_messages": "/messages",
+    "claude_messages_bearer": "/messages",
     "openai_chat": "/chat/completions",
     "openai_responses": "/responses",
 }
@@ -250,7 +251,9 @@ class VisionProvider:
                     ],
                 }
             ],
-        }, {"X-API-Key": self._api_key, "anthropic-version": "2023-06-01"}
+        }, ({"Authorization": f"Bearer {self._api_key}"}
+            if self.protocol == "claude_messages_bearer"
+            else {"X-API-Key": self._api_key, "anthropic-version": "2023-06-01"})
 
     def _validate_configuration(self):
         if not self._api_key:
@@ -355,7 +358,10 @@ class VisionProvider:
 
     @staticmethod
     def _validate_answer(answer):
-        if not isinstance(answer, str) or not re.fullmatch(r"[A-Za-z0-9]{4,10}", answer.strip()):
+        if (not isinstance(answer, str) or not re.fullmatch(r"[A-Za-z0-9]{4,10}", answer.strip())
+            or answer.strip().casefold() in {"noimage", "sendimage"}):
+            # Some gateways return an image-unavailable sentinel as plain text.
+            # It fits the character pattern but is not an OCR result to submit.
             raise VisionError("captcha_invalid_response")
         return answer.strip()
 

@@ -116,6 +116,14 @@ def live(db, batch):
         raise HTTPException(410, '批次已取消、下载或过期，请重新提交')
 
 
+def can_retry_challenge(item):
+    from .auth_retry import restartable_challenge
+    if item.state != 'challenge' or item.cancel_requested or not item.input_encrypted:
+        return False
+    credential = decrypt(item.credential_encrypted) if item.credential_encrypted else {}
+    return credential.get('status') not in ('unknown', 'candidate') and restartable_challenge(item.workflow_encrypted)
+
+
 def view(db, batch, detail=True):
     rows = items(db, batch)
     counts = {state: sum(i.state == state for i in rows) for state in ACTIVE + TERMINAL}
@@ -127,7 +135,8 @@ def view(db, batch, detail=True):
     if detail:
         result['items'] = [{k: getattr(i, k) for k in ('id', 'position', 'username', 'portal_url', 'region', 'state',
                            'stage', 'error_code', 'error', 'revision', 'retry_count', 'next_poll_at', 'cancel_requested')}
-                           | {'credential_recovery_available': bool(i.credential_encrypted)} for i in rows]
+                           | {'credential_recovery_available': bool(i.credential_encrypted),
+                              'can_retry_challenge': can_retry_challenge(i)} for i in rows]
     return result
 
 
@@ -201,12 +210,22 @@ def cancel(batch_id: str, actor: User = Depends(get_user), db: Session = Depends
 
 @router.post('/{batch_id}/items/{item_id}/retry', status_code=202)
 def retry(batch_id: str, item_id: str, actor: User = Depends(get_user), db: Session = Depends(get_db)):
+    from .external_auth_worker import login_fences
+    batch = batch_owned(db, batch_id, actor)
+    item = item_owned(db, batch, item_id)
+    with login_fences(item) as acquired:
+        if not acquired:
+            raise HTTPException(409, '当前登录步骤正在结束，请稍后重试')
+        return retry_locked(batch_id, item_id, actor, db)
+
+
+def retry_locked(batch_id, item_id, actor, db):
     batch = batch_owned(db, batch_id, actor)
     live(db, batch)
     require_session(batch, actor)
     item = item_owned(db, batch, item_id)
     validate_managed(db, item, actor)
-    if item.state not in ('failed', 'needs_review') or item.cancel_requested or not item.input_encrypted:
+    if (item.state not in ('failed', 'needs_review') and not can_retry_challenge(item)) or item.cancel_requested or not item.input_encrypted:
         raise HTTPException(409, '此项不可恢复，请核对后重新粘贴账号')
     credential = decrypt(item.credential_encrypted) if item.credential_encrypted else {}
     if credential.get('status') in ('unknown', 'candidate'):

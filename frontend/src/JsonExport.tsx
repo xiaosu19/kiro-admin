@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useLocation, useSearchParams } from "react-router-dom";
 import { type AuthBatch, type RecordItem, type User } from "./api";
 import { authRequest, canUseAuthRecord } from "./authLogic";
@@ -8,11 +8,27 @@ import { ManualAuthPicker, SelectedAuthRecords } from "./AuthSelection";
 import { ExternalJsonExport } from "./ExternalJsonExport";
 import { GroupJsonExport } from "./GroupJsonExport";
 import { AiRecognitionNotice, AiSettings } from "./AiSettings";
+import { exportMode, exportTaskParams, rememberedExport, restoreExport } from "./jsonExportNavigation";
 
 export function JsonExport({ user, notify }: { user: User; notify: (message: string, error?: boolean) => void }) {
   const [params, setParams] = useSearchParams();
   const location = useLocation();
-  const [mode, setMode] = useState<"manual" | "group" | "paste">(params.get("source") === "paste" || params.has("external_batch_id") ? "paste" : params.get("source") === "group" || params.has("group_id") ? "group" : "manual");
+  let currentParams = params;
+  if (!params.size && !(location.state as { records?: unknown } | null)?.records) {
+    try { currentParams = restoreExport(sessionStorage.getItem(`kiro:json-export:last:${user.id}`)) || params; }
+    catch { /* Render the normal picker when storage is unavailable. */ }
+  }
+  const mode = exportMode(currentParams);
+  useEffect(() => {
+    try {
+      const key = `kiro:json-export:last:${user.id}`, saved = rememberedExport(params);
+      if (saved) sessionStorage.setItem(key, saved);
+      else if (!params.size && !(location.state as { records?: unknown } | null)?.records) {
+        const restored = restoreExport(sessionStorage.getItem(key));
+        if (restored) setParams(restored, { replace: true });
+      }
+    } catch { /* Storage can be unavailable; server history remains accessible. */ }
+  }, [user.id, params, setParams, location.state]);
   const [selected, setSelected] = useState<RecordItem[]>(() => {
     const records = (location.state as { records?: RecordItem[] } | null)?.records;
     return Array.isArray(records) ? records.filter(r => r && typeof r.id === "string" && canUseAuthRecord(r, user, "json_export")).slice(0, 100) : [];
@@ -20,10 +36,10 @@ export function JsonExport({ user, notify }: { user: User; notify: (message: str
   const [error, setError] = useState(""), [version, setVersion] = useState(0);
   const admission = useAuthAdmission(user.id, "json_export");
   const locked = admission.busy || !!admission.pending;
-  const batchId = params.get("batch_id");
+  const batchId = currentParams.get("batch_id");
   function accepted(batch: AuthBatch) {
     setSelected([]); setError(""); setVersion(v => v + 1);
-    setParams(old => { const next = new URLSearchParams(old); next.set("batch_id", batch.id); return next; });
+    setParams(exportTaskParams(mode === "group" ? "group" : "manual", batch.id));
     notify("转换已提交，请查看每位用户的进度");
   }
   async function submit() {
@@ -47,12 +63,10 @@ export function JsonExport({ user, notify }: { user: User; notify: (message: str
     <div className="auth-mode" role="group" aria-label="选择来源">{([
       ["manual", "手动选择"], ["group", "按分组选择"], ["paste", "粘贴账号转换"],
     ] as const).map(([value, label]) => <button key={value} className={mode === value ? "primary" : "secondary"} disabled={locked} onClick={() => {
-      setMode(value); setSelected([]); setParams(old => { const next = new URLSearchParams(old); next.set("source", value); return next; });
+      setSelected([]); setParams({ source: value });
     }}>{label}</button>)}</div>
     {mode === "paste" ? <ExternalJsonExport key={user.id} user={user} notify={notify}
-      selectedId={params.get("external_batch_id")} onSelected={id => setParams(old => {
-        const next = new URLSearchParams(old); next.set("source", "paste"); next.set("external_batch_id", id); return next;
-      })} /> : <>
+      selectedId={currentParams.get("external_batch_id")} onSelected={id => setParams(exportTaskParams("paste", id))} /> : <>
     <AdmissionRecovery admission={admission} onAccepted={accepted} />
     {mode === "group" ? <GroupJsonExport key={`${user.id}:${params.getAll("group_id").join(":")}`} user={user} notify={notify}
       initialGroupIds={params.getAll("group_id")} onAccepted={accepted} /> :
@@ -65,7 +79,7 @@ export function JsonExport({ user, notify }: { user: User; notify: (message: str
       <button className="primary" disabled={locked || !selected.length} onClick={() => void submit()}>{admission.busy ? "正在提交…" : `转换选中的 ${selected.length} 人`}</button>
     </section>}
     {batchId && <AuthProgress key={`${user.id}:${batchId}`} id={batchId} actorId={user.id} scope="json_export" notify={notify} onChanged={() => setVersion(v => v + 1)} />}
-    <AuthHistory actorId={user.id} scope="json_export" version={version} selectedId={batchId} onSelect={id => setParams(old => { const next = new URLSearchParams(old); next.set("batch_id", id); return next; })} />
+    <AuthHistory actorId={user.id} scope="json_export" version={version} selectedId={batchId} onSelect={id => setParams(exportTaskParams(mode === "group" ? "group" : "manual", id))} />
     </>}
   </>;
 }

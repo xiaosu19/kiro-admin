@@ -7,6 +7,7 @@
 | 后台选项 | 协议值 | 请求路径 | 认证方式 |
 | --- | --- | --- | --- |
 | Claude Messages | `claude_messages` | `/v1/messages` | `X-API-Key` + `anthropic-version` |
+| Claude Messages（Bearer） | `claude_messages_bearer` | `/v1/messages` | `Authorization: Bearer …` |
 | OpenAI Chat Completions | `openai_chat` | `/v1/chat/completions` | `Authorization: Bearer` |
 | OpenAI Responses | `openai_responses` | `/v1/responses` | `Authorization: Bearer` |
 

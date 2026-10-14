@@ -58,7 +58,7 @@ export function batchCanDownload(batch: AuthBatch) {
     !!batch.completed_at && batch.success_count > 0 && ["queued", "running", "challenge", "polling"].every(state => !batch.states[state as keyof typeof batch.states]);
 }
 export function retryableItems(batch: AuthBatch) {
-  return (batch.items || []).filter(item => ["failed", "needs_review"].includes(item.state) && !item.requires_new_reset && !item.cancel_requested);
+  return (batch.items || []).filter(item => (["failed", "needs_review"].includes(item.state) || item.state === "challenge" && item.can_retry_challenge) && !item.requires_new_reset && !item.cancel_requested);
 }
 
 export function safeAuthorizationUrl(challenge: AuthChallenge) {

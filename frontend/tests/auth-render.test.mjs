@@ -27,6 +27,14 @@ const batch = { id: "batch-a", actor_id: 7, kind: "json_export", state: "active"
     { record_id: "c", username: "unknown-user", state: "needs_review", requires_new_reset: true, credential_state: "unknown" },
   ] };
 const actions = { busy: false, onAction() {}, onDownload() {}, onChallenge() {} };
+test("settled CAPTCHA exposes retry before failure while ongoing verification does not", () => {
+  const waiting = { ...batch, completed_at: null, download_ready: false, items: [
+    { record_id: "challenge", username: "waiting", state: "challenge", can_retry_challenge: true },
+  ] };
+  assert.match(render(h(AuthBatchView, { batch: waiting, ...actions })), /重试验证/);
+  waiting.items[0].can_retry_challenge = false;
+  assert.doesNotMatch(render(h(AuthBatchView, { batch: waiting, ...actions })), /重试验证/);
+});
 test("partial batch displays per-account outcomes, excluded count, deadline and explicit unknown reset", () => {
   const html = render(h(AuthBatchView, { batch, ...actions }));
   assert.match(html, /成功 1/); assert.match(html, /未成功 2/);
