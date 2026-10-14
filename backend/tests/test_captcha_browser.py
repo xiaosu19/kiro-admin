@@ -1727,7 +1727,7 @@ def test_sdk_stream_checks_revocation_without_a_database_scan_per_chunk(monkeypa
             asyncio.run(scenario())
         assert caught.value is failure
         if revoke == "during_stream":
-            assert len(chunks) <= 7
+            assert len(chunks) <= 17
     else:
         status, _, body = asyncio.run(scenario())
         assert status == 200 and len(body) == 2 * 1024 * 1024

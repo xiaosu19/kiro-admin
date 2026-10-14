@@ -35,6 +35,7 @@ MAX_TRANSFER = 24 * 1024 * 1024
 MAX_REQUEST = 256 * 1024
 MAX_REQUESTS = 80
 MAX_IMAGE = 2_000_000
+GUARD_INTERVAL = 0.5
 SAFE_CODES = {
     "captcha_browser_unavailable", "captcha_browser_failed", "captcha_timeout",
     "captcha_attempt_limit", "captcha_unsupported_challenge",
@@ -276,7 +277,7 @@ class _ProxyHTTP:
                         except ValueError:
                             raise BrowserChallengeError("captcha_invalid_response") from None
                     content = bytearray()
-                    next_guard = time.monotonic() + 0.2
+                    next_guard = time.monotonic() + GUARD_INTERVAL
                     async for chunk in response.aiter_bytes(chunk_size=16384):
                         # Rechecking the full durable account/group scope for
                         # every 16 KiB turns one SDK download into hundreds of
@@ -285,7 +286,7 @@ class _ProxyHTTP:
                         # before the request and before returning its body.
                         if time.monotonic() >= next_guard:
                             self.gateway._check_proxy()
-                            next_guard = time.monotonic() + 0.2
+                            next_guard = time.monotonic() + GUARD_INTERVAL
                         _remaining(self.deadline)
                         self.transferred += len(chunk)
                         if len(content) + len(chunk) > response_limit or self.transferred > MAX_TRANSFER:
@@ -488,7 +489,8 @@ async def _drive(page, http, provider, before_recognition, deadline, failure):
     max_attempts = settings.captcha_max_attempts
     while True:
         _remaining(deadline)
-        http.gateway._check_proxy()
+        # The monitor checks cancellation while inspecting local DOM. Fresh
+        # guards still precede every wire request and OCR submission below.
         if failure.done():
             raise failure.result()
         state = await page.evaluate("window.__kiroAMS")
@@ -684,7 +686,7 @@ async def _solve(challenge, gateway, provider, deadline, before_recognition):
                         raise failure.result()
                     _remaining(deadline)
                     gateway._check_proxy()
-                    await asyncio.sleep(0.2)
+                    await asyncio.sleep(GUARD_INTERVAL)
 
             tasks = [asyncio.create_task(drive()), asyncio.create_task(monitor())]
             done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
