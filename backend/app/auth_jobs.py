@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import HTTPException
 from sqlalchemy import and_, bindparam, or_, select, update
+from sqlalchemy.orm import aliased
 
 from .account_dispatcher import account_fence, record_scope, resource_fence
 from .auth_session_dispatcher import AuthSession
@@ -41,11 +42,15 @@ from .models import (
     AuthJob,
     AuthSecret,
     AwsAccount,
+    ManagedGroup,
+    ProvisioningItem,
+    Proxy,
     RecordOperation,
     Subscription,
     User,
     now,
 )
+from .group_export_models import AuthExportMember, AuthExportScope
 from .security import audit, decrypt, encrypt
 from .automatic_retries import ready_clause, schedule_retry, settle_retry
 from .captcha_errors import captcha_failure
@@ -76,9 +81,19 @@ _JOB_READ = (select(AuthJob, RecordOperation, Subscription, AuthBatch)
     .where(AuthJob.id == bindparam("auth_job_id")))
 _SECRET_READ = _JOB_READ.add_columns(AuthSecret).outerjoin(
     AuthSecret, AuthSecret.job_id == AuthJob.id)
-_AUTHORIZATION_READ = (_JOB_READ.add_columns(User, AwsAccount)
+_SCOPE_OWNER = aliased(User)
+_AUTHORIZATION_READ = (_JOB_READ.add_columns(
+        User, AwsAccount, ProvisioningItem, AuthExportScope,
+        AuthExportMember, ManagedGroup, _SCOPE_OWNER, Proxy)
     .outerjoin(User, User.id == AuthBatch.actor_id)
-    .outerjoin(AwsAccount, AwsAccount.id == Subscription.aws_account_id))
+    .outerjoin(AwsAccount, AwsAccount.id == Subscription.aws_account_id)
+    .outerjoin(ProvisioningItem, ProvisioningItem.record_id == Subscription.id)
+    .outerjoin(AuthExportScope, AuthExportScope.batch_id == AuthBatch.id)
+    .outerjoin(AuthExportMember, and_(AuthExportMember.batch_id == AuthBatch.id,
+                                    AuthExportMember.record_id == Subscription.id))
+    .outerjoin(ManagedGroup, ManagedGroup.id == AuthExportMember.group_id)
+    .outerjoin(_SCOPE_OWNER, _SCOPE_OWNER.id == AuthExportMember.owner_id)
+    .outerjoin(Proxy, Proxy.id == AwsAccount.proxy_id))
 
 
 def expire_batches(*, limit=25):
@@ -214,8 +229,9 @@ def load(db, job_id, token, *, include_secret=True):
 
 def authorize(job_id, token):
     with SessionLocal() as db:
-        # Keep the row alive so require_access's Session.get calls reuse these
-        # freshly read principals through SQLAlchemy's weak identity map.
+        # Keep the row alive so existing access and frozen-group checks reuse
+        # freshly read rows through SQLAlchemy's weak identity map. All checks
+        # still run, and no result survives this call's session.
         row = db.execute(_AUTHORIZATION_READ, {"auth_job_id": job_id}).one_or_none()
         job, op, r, batch = _checked_job(row, token)
         if job.cancel_requested or batch.state != "active" or now() >= batch.expires_at:

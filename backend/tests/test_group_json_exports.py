@@ -83,6 +83,33 @@ def test_group_preview_skips_unsubscribed_completed_sso(alice):
     assert '订阅' in response.json()['groups'][0]['members'][0]['skip_reason']
 
 
+def test_group_authorization_batches_reads_without_caching_membership(alice):
+    from sqlalchemy import event
+    from app.auth_jobs import authorize, claim_job, Revoked
+    from app.database import engine
+
+    groups, records = seed_groups(quantity=60)
+    response = admit(alice, preview(alice, groups).json())
+    assert response.status_code == 202
+    job_id, token = claim_job(record_id=records[0])
+    queries = []
+
+    def observe(connection, cursor, statement, parameters, context, executemany):
+        queries.append(statement)
+
+    event.listen(engine, 'before_cursor_execute', observe)
+    try:
+        authorize(job_id, token)
+    finally:
+        event.remove(engine, 'before_cursor_execute', observe)
+    assert len(queries) <= 4
+    with SessionLocal() as db:
+        db.get(Subscription, records[0]).group_membership_id = 'changed-membership'
+        db.commit()
+    with pytest.raises(Revoked):
+        authorize(job_id, token)
+
+
 def test_five_groups_of_one_hundred_admit_exactly_five_hundred_existing_auth_jobs(alice):
     groups, records = seed_groups(5, 100)
     value = preview(alice, groups)
