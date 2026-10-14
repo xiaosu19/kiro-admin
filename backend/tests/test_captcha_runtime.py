@@ -1,6 +1,7 @@
 """Shared real Chromium, with independent transports and account contexts."""
 import asyncio
 import json
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -188,3 +189,39 @@ def test_retiring_browser_waits_for_its_last_live_context(monkeypatch):
         runtime.run(scenario, time.monotonic() + 3)
     finally:
         runtime.close()
+
+
+def test_caller_timeout_during_cleanup_cannot_strand_shared_lease(shared_browser, monkeypatch):
+    from app import captcha_runtime
+    from playwright.async_api import BrowserContext
+    install, contexts, launches = shared_browser
+    install()
+    module = browser_module()
+    original = module._cleanup_call
+    cleanup_started, finish_cleanup = threading.Event(), threading.Event()
+
+    async def delayed_cleanup(operation, *args, **kwargs):
+        if isinstance(getattr(operation, "__self__", None), BrowserContext) and not cleanup_started.is_set():
+            cleanup_started.set()
+            while not finish_cleanup.is_set():
+                await asyncio.sleep(0.01)
+        return await original(operation, *args, **kwargs)
+
+    monkeypatch.setattr(module, "_cleanup_call", delayed_cleanup)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        result = pool.submit(run, module, Gateway(), Vision(), lambda: None, 2)
+        try:
+            assert cleanup_started.wait(4)
+            with pytest.raises(module.BrowserChallengeError, match="^captcha_timeout$"):
+                result.result(timeout=4)
+        finally:
+            finish_cleanup.set()
+    runtime = captcha_runtime.shared_runtime()
+    async def drained(runtime):
+        deadline = time.monotonic() + 2
+        while runtime.current is not None and time.monotonic() < deadline:
+            await asyncio.sleep(0.02)
+        assert runtime.current is None
+    runtime.run(drained, time.monotonic() + 3)
+    assert run(module, Gateway(), Vision(), lambda: None) == "official-fixture-access-code"
+    assert len(launches) == 2 and len(contexts) == 2

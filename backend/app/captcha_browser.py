@@ -737,20 +737,37 @@ async def _solve(challenge, gateway, provider, deadline, before_recognition, run
         raise BrowserChallengeError("captcha_browser_failed") from None
     finally:
         failure.cancel()
-        pending = await _settle(tasks + list(handlers), hard_deadline, cancel=True)
-        context_closed = context is None
-        for resource in (context, None if shared_lease else browser):
-            if resource is not None:
-                closed = await _cleanup_call(resource.close, hard_deadline)
-                if resource is context:
-                    context_closed = closed
-        if http is not None and getattr(http, "client", None) is not None:
-            await _cleanup_call(lambda: http.__aexit__(None, None, None), hard_deadline, maximum=0.05)
-        if manager is not None:
-            await _cleanup_call(lambda: manager.__aexit__(None, None, None), hard_deadline)
-            await _stop_owned_driver(manager, browser, browser_group, hard_deadline)
-        if shared_lease:
-            await runtime.release(shared_lease, dirty=bool(pending) or not context_closed)
+
+        async def cleanup():
+            dirty = True
+            try:
+                pending = await _settle(tasks + list(handlers), hard_deadline, cancel=True)
+                context_closed = context is None
+                for resource in (context, None if shared_lease else browser):
+                    if resource is not None:
+                        closed = await _cleanup_call(resource.close, hard_deadline)
+                        if resource is context:
+                            context_closed = closed
+                if http is not None and getattr(http, "client", None) is not None:
+                    await _cleanup_call(lambda: http.__aexit__(None, None, None), hard_deadline, maximum=0.05)
+                if manager is not None:
+                    await _cleanup_call(lambda: manager.__aexit__(None, None, None), hard_deadline)
+                    await _stop_owned_driver(manager, browser, browser_group, hard_deadline)
+                dirty = bool(pending) or not context_closed
+            finally:
+                if shared_lease:
+                    await runtime.release(shared_lease, dirty=dirty)
+
+        if runtime:
+            # The caller's hard timeout can cancel _solve again while several
+            # contexts finish together on a throttled CPU. Cleanup must outlive
+            # that cancellation, otherwise the runtime retains an active lease
+            # forever and every subsequent challenge waits for its own timeout.
+            cleanup_task = asyncio.create_task(cleanup())
+            cleanup_task.add_done_callback(_observe_task)
+            await asyncio.shield(cleanup_task)
+        else:
+            await cleanup()
 
 
 def solve_ams(challenge, gateway, provider, *, deadline, before_recognition):
