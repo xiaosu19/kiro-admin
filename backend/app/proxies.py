@@ -15,7 +15,7 @@ from urllib3.exceptions import (
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
-from sqlalchemy import func, select
+from sqlalchemy import bindparam, func, select
 from sqlalchemy.orm import Session
 
 from .database import SessionLocal, get_db
@@ -25,6 +25,9 @@ from .aws_transport import request_session
 
 router = APIRouter(prefix="/api/admin/proxies")
 MAX_IMPORT = 100
+_ACCOUNT_PROXY_READ = (select(AwsAccount.proxy_id, Proxy.id, Proxy.revision, Proxy.enabled)
+    .outerjoin(Proxy, Proxy.id == AwsAccount.proxy_id)
+    .where(AwsAccount.id == bindparam("proxy_account_id")))
 
 
 class ProxyUnavailable(Exception):
@@ -103,13 +106,16 @@ def account_proxy(account):
 
 def check_account_proxy(account, selection):
     with SessionLocal() as db:
-        check_selection(db, selection)
-        if account.id is not None:
-            selected_id = db.scalar(
-                select(AwsAccount.proxy_id).where(AwsAccount.id == account.id)
-            )
-            if selected_id != (selection.proxy_id if selection else None):
-                raise ProxyUnavailable()
+        if account.id is None:
+            check_selection(db, selection)
+            return
+        row = db.execute(_ACCOUNT_PROXY_READ, {"proxy_account_id": account.id}).one_or_none()
+        selected_id = row[0] if row else None
+        if selected_id != (selection.proxy_id if selection else None):
+            raise ProxyUnavailable()
+        if selection and (row is None or row[1] is None
+                          or row[2] != selection.revision or not row[3]):
+            raise ProxyUnavailable()
 
 
 def validate_host(value):

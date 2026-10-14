@@ -373,8 +373,10 @@ def _advance(db, row):
         if members_first(row) and current and all(i.state == 'prepared' for i in current):
             transition(row, 'group_open')
             return
-        pending = [i for i in current if i.state != 'completed'
-                   and db.get(Subscription, i.record_id) is None]
+        unresolved = [i for i in current if i.state != 'completed']
+        existing = set(db.scalars(select(Subscription.id).where(
+            Subscription.id.in_([i.record_id for i in unresolved])))) if unresolved else set()
+        pending = [i for i in unresolved if i.record_id not in existing]
         if pending:
             # The accepted intent bounds this account to at most 100 children.
             # Queue admission stays atomic; only the bounded dispatcher may

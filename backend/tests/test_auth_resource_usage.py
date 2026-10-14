@@ -76,6 +76,20 @@ def test_failed_request_does_not_leave_idle_pool():
     assert not auth_connections._idle
 
 
+def test_twenty_login_flows_retain_their_own_connections_between_steps():
+    adapters = {}
+    for round_number in range(2):
+        for flow in range(20):
+            with auth_connections.reuse_connections(request_session(),
+                    flow_id=str(flow), proxy_url=None) as session:
+                adapter = session.adapters['https://']
+                if round_number:
+                    assert adapter is adapters[flow]
+                else:
+                    adapters[flow] = adapter
+    assert len({id(adapter) for adapter in adapters.values()}) == 20
+
+
 def test_idle_pool_expires(monkeypatch):
     instant = [10.0]
     monkeypatch.setattr(auth_connections.time, 'monotonic', lambda: instant[0])

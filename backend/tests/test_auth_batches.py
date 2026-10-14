@@ -803,6 +803,38 @@ def test_revalidate_permissions_before_worker_and_download(alice, revocation):
         assert db.get(RecordOperation, job.id).state == "cancelled"
 
 
+@pytest.mark.parametrize("revocation", ["session", "account"])
+def test_frequent_authorization_reads_principals_once_but_never_caches_rights(alice, revocation):
+    from sqlalchemy import event
+    from app.auth_jobs import authorize, claim_job, Revoked
+    from app.database import engine
+    from app.models import User
+
+    r = record()
+    assert admission(alice, [r]).status_code == 202
+    job_id, token = claim_job(record_id=r.id)
+    statements = []
+
+    def observe(connection, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+
+    event.listen(engine, "before_cursor_execute", observe)
+    try:
+        authorize(job_id, token)
+    finally:
+        event.remove(engine, "before_cursor_execute", observe)
+    # One job/principal read plus binding, provisioning and group-scope checks.
+    assert len(statements) <= 4
+    with SessionLocal() as db:
+        if revocation == "session":
+            db.get(User, 2).session_version += 1
+        else:
+            db.get(AwsAccount, 1).active = False
+        db.commit()
+    with pytest.raises(Revoked):
+        authorize(job_id, token)
+
+
 def test_proxy_bound_failure_never_falls_back_or_changes_password(alice):
     from app.aws import AwsFailure
 

@@ -13,7 +13,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 from fastapi import HTTPException
-from sqlalchemy import and_, or_, select, update
+from sqlalchemy import and_, bindparam, or_, select, update
 
 from .account_dispatcher import account_fence, record_scope, resource_fence
 from .auth_session_dispatcher import AuthSession
@@ -66,6 +66,19 @@ worker_lock = account_fence
 
 
 _expiry_cursor = None
+
+# These guards run before each request and throughout browser waits. Reuse the
+# query shape, never its results; every call still opens a fresh DB session.
+_JOB_READ = (select(AuthJob, RecordOperation, Subscription, AuthBatch)
+    .join(RecordOperation, RecordOperation.id == AuthJob.id)
+    .join(Subscription, Subscription.id == AuthJob.record_id)
+    .join(AuthBatch, AuthBatch.id == AuthJob.batch_id)
+    .where(AuthJob.id == bindparam("auth_job_id")))
+_SECRET_READ = _JOB_READ.add_columns(AuthSecret).outerjoin(
+    AuthSecret, AuthSecret.job_id == AuthJob.id)
+_AUTHORIZATION_READ = (_JOB_READ.add_columns(User, AwsAccount)
+    .outerjoin(User, User.id == AuthBatch.actor_id)
+    .outerjoin(AwsAccount, AwsAccount.id == Subscription.aws_account_id))
 
 
 def expire_batches(*, limit=25):
@@ -178,16 +191,7 @@ def claim_job(*, account_id=None, record_id=None):
         return (job.id, token) if changed.rowcount else None
 
 
-def load(db, job_id, token, *, include_secret=True):
-    entities = [AuthJob, RecordOperation, Subscription, AuthBatch]
-    if include_secret:
-        entities.append(AuthSecret)
-    query = (select(*entities).join(RecordOperation, RecordOperation.id == AuthJob.id)
-             .join(Subscription, Subscription.id == AuthJob.record_id)
-             .join(AuthBatch, AuthBatch.id == AuthJob.batch_id))
-    if include_secret:
-        query = query.outerjoin(AuthSecret, AuthSecret.job_id == AuthJob.id)
-    row = db.execute(query.where(AuthJob.id == job_id)).one_or_none()
+def _checked_job(row, token):
     if row is None:
         raise LeaseLost()
     job, op, r, batch = row[:4]
@@ -198,12 +202,22 @@ def load(db, job_id, token, *, include_secret=True):
         or r.credential_revision != job.credential_revision
     ):
         raise LeaseLost()
-    return job, op, r, batch, row[4] if include_secret else None
+    return job, op, r, batch
+
+
+def load(db, job_id, token, *, include_secret=True):
+    row = db.execute(_SECRET_READ if include_secret else _JOB_READ,
+                     {"auth_job_id": job_id}).one_or_none()
+    values = _checked_job(row, token)
+    return (*values, row[4] if include_secret else None)
 
 
 def authorize(job_id, token):
     with SessionLocal() as db:
-        job, op, r, batch, secret = load(db, job_id, token, include_secret=False)
+        # Keep the row alive so require_access's Session.get calls reuse these
+        # freshly read principals through SQLAlchemy's weak identity map.
+        row = db.execute(_AUTHORIZATION_READ, {"auth_job_id": job_id}).one_or_none()
+        job, op, r, batch = _checked_job(row, token)
         if job.cancel_requested or batch.state != "active" or now() >= batch.expires_at:
             raise Revoked()
         try:

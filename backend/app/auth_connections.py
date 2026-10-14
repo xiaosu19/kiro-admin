@@ -14,7 +14,7 @@ from threading import Lock
 from requests.adapters import HTTPAdapter
 
 IDLE_SECONDS = 30
-MAX_IDLE_FLOWS = 16
+MAX_IDLE_FLOWS = 20
 _idle = OrderedDict()
 _lock = Lock()
 

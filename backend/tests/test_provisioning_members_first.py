@@ -48,6 +48,28 @@ def test_all_members_join_before_group_subscription_and_json_admission(alice, ga
             assert r.subscription_status == 'active' and r.counted
 
 
+def test_waiting_for_created_members_does_not_query_each_record(alice, gateway):
+    from sqlalchemy import event
+    from app.database import engine
+    from app.provisioning_coordinator import run_one
+
+    parent = admit(alice, body(quantity=20)).json()
+    admit_members(parent)
+    queries = []
+
+    def observe(connection, cursor, statement, parameters, context, executemany):
+        if statement.lstrip().startswith('SELECT') and 'FROM console_subscriptions' in statement:
+            queries.append(statement)
+
+    event.listen(engine, 'before_cursor_execute', observe)
+    try:
+        run_one(account_id=1)
+    finally:
+        event.remove(engine, 'before_cursor_execute', observe)
+    assert len(queries) <= 3
+    assert not any(event[0] in ('sso', 'GROUP') for event in gateway.events)
+
+
 def test_failure_offers_batch_retry_and_preserves_prepared_members(alice, gateway):
     parent = admit(alice, body(quantity=3)).json()
     failed_id = parent['accounts'][0]['items'][1]['record_id']
