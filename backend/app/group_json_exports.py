@@ -3,6 +3,7 @@
 import json
 import uuid
 from datetime import timedelta
+from functools import lru_cache
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -186,6 +187,19 @@ def admit(body: GroupAdmission, request: Request, actor: User = Depends(get_user
     return batch_view(db, batch)
 
 
+@lru_cache(maxsize=4)
+def _snapshot_index(snapshot):
+    """Cache only the immutable preview text, never current authority/state."""
+    groups = {}
+    for item in json.loads(snapshot):
+        members = {}
+        for member in item['members']:
+            if member['skip_reason'] is None:
+                members.setdefault(member['id'], member)
+        groups.setdefault(item['group']['id'], (item, members))
+    return groups
+
+
 def require_scope(db, batch, record):
     """Existing worker authorization invokes this before every native step."""
     from .worker_guards import check_config
@@ -199,11 +213,14 @@ def require_scope(db, batch, record):
     if not member:
         raise HTTPException(409, '原分组 JSON 成员映射已变化')
     group = db.get(ManagedGroup, member.group_id)
-    item = next((item for item in json.loads(scope.snapshot) if item['group']['id'] == member.group_id), None)
+    # Key by the actual stored text: even an in-place snapshot edit invalidates
+    # the cache. Large previews are not retained in the process after this call.
+    parse = _snapshot_index if len(scope.snapshot) <= 1024 * 1024 else _snapshot_index.__wrapped__
+    item, members = parse(scope.snapshot).get(member.group_id, (None, {}))
     if (not item or not group or group.state != 'ready' or group.active_job_id
             or plain({k: getattr(group, k) for k in GROUP_FIELDS}) != item['group']):
         raise HTTPException(409, '冻结的分组身份、版本或成员归属已变化，请重新预览')
-    original = next((m for m in item['members'] if m['id'] == record.id and m['skip_reason'] is None), None)
+    original = members.get(record.id)
     if (not original or member.config_hash != item['config_hash'] or
             (member.owner_id, member.aws_account_id, member.group_id, member.membership_id,
              member.username, member.email, member.sso_user_id) !=

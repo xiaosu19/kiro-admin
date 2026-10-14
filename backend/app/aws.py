@@ -213,8 +213,20 @@ class AwsGateway:
             self._check_proxy()
         except ProxyUnavailable as exc:
             raise AwsFailure(str(exc)) from None
-        self.session = make_session(**decrypt(account.credentials_encrypted))
+        self._session = None
         self._identity = None
+
+    @property
+    def session(self):
+        # Most native login steps use only HTTP. Construct the SDK and decrypt
+        # administrative credentials only when a signed/SDK operation needs it.
+        if self._session is None:
+            self._session = make_session(**decrypt(self.account.credentials_encrypted))
+        return self._session
+
+    @session.setter
+    def session(self, value):
+        self._session = value
 
     @property
     def identity(self):

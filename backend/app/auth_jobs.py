@@ -89,12 +89,15 @@ def expire_batches(*, limit=25):
         for batch in db.scalars(select(AuthBatch).where(AuthBatch.id.in_(ids), AuthBatch.state == "active")):
             if not check_expiry(db, batch):
                 continue
-            for job in jobs(db, batch):
-                op, secret = db.get(RecordOperation, job.id), db.get(AuthSecret, job.id)
-                if op.state == "challenge" and secret.workflow_encrypted:
-                    state = decrypt(secret.workflow_encrypted)
-                    if time.time() >= state.get("challenge", {}).get("expires_at", 0):
-                        expire_challenge(db, job, op, secret)
+            challenges = db.execute(select(AuthJob, RecordOperation, AuthSecret)
+                .join(RecordOperation, RecordOperation.id == AuthJob.id)
+                .join(AuthSecret, AuthSecret.job_id == AuthJob.id)
+                .where(AuthJob.batch_id == batch.id, RecordOperation.state == "challenge",
+                       AuthSecret.workflow_encrypted.is_not(None)))
+            for job, op, secret in challenges:
+                state = decrypt(secret.workflow_encrypted)
+                if time.time() >= state.get("challenge", {}).get("expires_at", 0):
+                    expire_challenge(db, job, op, secret)
             finish_batch(db, batch)
         db.commit()
 
@@ -175,22 +178,32 @@ def claim_job(*, account_id=None, record_id=None):
         return (job.id, token) if changed.rowcount else None
 
 
-def load(db, job_id, token):
-    op, job = db.get(RecordOperation, job_id), db.get(AuthJob, job_id)
-    if not op or not job or op.state != "running" or op.lease_token != token:
+def load(db, job_id, token, *, include_secret=True):
+    entities = [AuthJob, RecordOperation, Subscription, AuthBatch]
+    if include_secret:
+        entities.append(AuthSecret)
+    query = (select(*entities).join(RecordOperation, RecordOperation.id == AuthJob.id)
+             .join(Subscription, Subscription.id == AuthJob.record_id)
+             .join(AuthBatch, AuthBatch.id == AuthJob.batch_id))
+    if include_secret:
+        query = query.outerjoin(AuthSecret, AuthSecret.job_id == AuthJob.id)
+    row = db.execute(query.where(AuthJob.id == job_id)).one_or_none()
+    if row is None:
         raise LeaseLost()
-    r = db.get(Subscription, job.record_id)
+    job, op, r, batch = row[:4]
+    if op.state != "running" or op.lease_token != token:
+        raise LeaseLost()
     if (
         r.active_operation_id != job.id
         or r.credential_revision != job.credential_revision
     ):
         raise LeaseLost()
-    return job, op, r, db.get(AuthBatch, job.batch_id), db.get(AuthSecret, job.id)
+    return job, op, r, batch, row[4] if include_secret else None
 
 
 def authorize(job_id, token):
     with SessionLocal() as db:
-        job, op, r, batch, secret = load(db, job_id, token)
+        job, op, r, batch, secret = load(db, job_id, token, include_secret=False)
         if job.cancel_requested or batch.state != "active" or now() >= batch.expires_at:
             raise Revoked()
         try:

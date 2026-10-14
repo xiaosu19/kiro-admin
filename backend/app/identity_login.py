@@ -39,6 +39,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from .aws import AwsFailure
 from .aws_transport import request_session
+from .auth_connections import reuse_connections
 from .config import settings
 from .security import decrypt, encrypt
 
@@ -482,7 +483,9 @@ class NativeIdentityLogin:
             self._emit(state, "request_pending")
         try:
             proxy = self.gateway.proxy
-            with request_session(proxy.url if proxy else None) as session:
+            proxy_url = proxy.url if proxy else None
+            with reuse_connections(request_session(proxy_url),
+                                   flow_id=state['operation_id'], proxy_url=proxy_url) as session:
                 for cookie in state["cookies"]:
                     if self._cookie_allowed(state, cookie):
                         session.cookies.set_cookie(

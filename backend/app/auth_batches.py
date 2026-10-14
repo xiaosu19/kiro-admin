@@ -116,7 +116,13 @@ def require_access(db, batch, r, *, job=None):
 def finish_batch(db, batch):
     if batch.state != "active":
         return
-    if all(db.get(RecordOperation, j.id).state in TERMINAL for j in jobs(db, batch)):
+    # A batch may contain thousands of users. SQL checks unfinished operations
+    # without loading every job and issuing one SELECT per completed sibling.
+    unfinished = db.scalar(select(AuthJob.id).outerjoin(
+        RecordOperation, RecordOperation.id == AuthJob.id
+    ).where(AuthJob.batch_id == batch.id,
+            (RecordOperation.id.is_(None) | RecordOperation.state.not_in(TERMINAL))).limit(1))
+    if unfinished is None:
         if batch.completed_at is None:
             batch.completed_at = now()
         from .provisioning_auth_window import parent_download_window

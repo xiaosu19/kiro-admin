@@ -18,6 +18,8 @@ def make_dispatcher(*, gateway_factory=None, auth_factory=None,
         nonlocal next_maintenance
         current = time.monotonic()
         if current >= next_maintenance:
+            from .auth_connections import prune
+            prune()
             auth_jobs.expire_batches()
             external_auth_worker.expire_batches()
             next_maintenance = current + 5
