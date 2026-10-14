@@ -36,6 +36,10 @@ MAX_REQUEST = 256 * 1024
 MAX_REQUESTS = 80
 MAX_IMAGE = 2_000_000
 GUARD_INTERVAL = 0.5
+# A full safety scan requires several browser protocol round trips. Four scans
+# per second avoid saturating the driver with unchanged waiting pages, while
+# every network request, OCR submission and accepted callback still rechecks.
+DOM_POLL_SECONDS = 0.25
 SAFE_CODES = {
     "captcha_browser_unavailable", "captcha_browser_failed", "captcha_timeout",
     "captcha_attempt_limit", "captcha_unsupported_challenge",
@@ -500,7 +504,7 @@ async def _drive(page, http, provider, before_recognition, deadline, failure):
         try:
             current, opener = await _inspect(page)
         except _WidgetFrameDetached:
-            await asyncio.sleep(min(0.1, _remaining(deadline)))
+            await asyncio.sleep(min(DOM_POLL_SECONDS, _remaining(deadline)))
             continue
         # Only accept a callback observed before this full scan. A callback that
         # arrives during inspection gets another scan for replacement OTP/MFA UI.
@@ -512,7 +516,7 @@ async def _drive(page, http, provider, before_recognition, deadline, failure):
             try:
                 version = await _in_frame(current.frame, _image_version(current.image, http))
                 if not version.ready:
-                    await asyncio.sleep(min(0.1, _remaining(deadline)))
+                    await asyncio.sleep(min(DOM_POLL_SECONDS, _remaining(deadline)))
                     continue
                 if submitted and version.source == submitted.source:
                     # Error text/input resets do not prove a refreshed challenge.
@@ -520,7 +524,7 @@ async def _drive(page, http, provider, before_recognition, deadline, failure):
                     # element) and changed bytes received by the guarded transport.
                     reloaded = (version.identity, version.loads) != (submitted.identity, submitted.loads)
                     if not reloaded or version.digest is None or version.digest == submitted.digest:
-                        await asyncio.sleep(min(0.1, _remaining(deadline)))
+                        await asyncio.sleep(min(DOM_POLL_SECONDS, _remaining(deadline)))
                         continue
                 if submitted and rejected is not submitted:
                     http.last_failure_code = "captcha_answer_rejected"
@@ -536,7 +540,7 @@ async def _drive(page, http, provider, before_recognition, deadline, failure):
                 if not cropped or len(cropped) > MAX_IMAGE:
                     raise BrowserChallengeError("captcha_invalid_response")
                 if await _in_frame(current.frame, _image_version(image, http)) != version:
-                    await asyncio.sleep(min(0.1, _remaining(deadline)))
+                    await asyncio.sleep(min(DOM_POLL_SECONDS, _remaining(deadline)))
                     continue
                 if attempts >= max_attempts:
                     raise BrowserChallengeError("captcha_attempt_limit",
@@ -557,7 +561,7 @@ async def _drive(page, http, provider, before_recognition, deadline, failure):
                         raise BrowserChallengeError("captcha_attempt_limit", last_failure_code=error.code) from None
                     # Retry within this live AMS session. Reopening the widget would
                     # consume its one-use redemption token again. Rescan before OCR.
-                    await asyncio.sleep(min(0.1, _remaining(deadline)))
+                    await asyncio.sleep(min(DOM_POLL_SECONDS, _remaining(deadline)))
                     continue
                 http.gateway._check_proxy()
                 _remaining(deadline)
@@ -575,16 +579,16 @@ async def _drive(page, http, provider, before_recognition, deadline, failure):
                 submitted = version
                 await _in_frame(current.frame, button.click(no_wait_after=True))
             except _WidgetFrameDetached:
-                await asyncio.sleep(min(0.1, _remaining(deadline)))
+                await asyncio.sleep(min(DOM_POLL_SECONDS, _remaining(deadline)))
                 continue
         elif opener and not opened and submitted is None:
             opened = True
             try:
                 await _in_frame(opener.frame, opener.button.click(no_wait_after=True))
             except _WidgetFrameDetached:
-                await asyncio.sleep(min(0.1, _remaining(deadline)))
+                await asyncio.sleep(min(DOM_POLL_SECONDS, _remaining(deadline)))
                 continue
-        await asyncio.sleep(min(0.1, _remaining(deadline)))
+        await asyncio.sleep(min(DOM_POLL_SECONDS, _remaining(deadline)))
 
 
 async def _launch_browser(deadline):
