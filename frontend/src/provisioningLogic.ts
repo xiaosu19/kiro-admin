@@ -24,6 +24,7 @@ export interface ProvisioningItem extends RetryProgress {
   credentials_ready: boolean; subscribed_at: string | null; export_state: string; export_error: string | null;
   export_stage: string | null; auth_batch_id: string | null; recovery: Recovery | null;
   export_retry?: import("./api").RetryProgress;
+  export_recovery?: Recovery;
 }
 export interface AccountPreview {
   aws_account_id: number; account_number: string; account_name: string; real_aws_account_id: string;
@@ -129,11 +130,13 @@ export function validProvisioningBatch(batch: ProvisioningBatch, intent: Provisi
       (row.group.mode === 'new' || actual.group.id === row.group.group_id); });
 }
 export function completedLegacyRecovery(batch: ProvisioningBatch, path: string) {
-  const offered = batch.accounts.some(account => [account.recovery, ...(account.items || []).map(item => item.recovery)]
+  const offered = batch.accounts.some(account => [account.recovery, ...(account.items || []).flatMap(item => [item.recovery, item.export_recovery])]
     .some(recovery => recovery?.path.replace(/^\/api/, '') === path));
   if (offered) return false;
   const account = batch.accounts.find(row => row.group.id && path === `/groups/${row.group.id}/retry`);
   if (account) return account.group_job_state == null ? account.state === 'completed' : account.group_job_state === 'completed';
+  const auth = batch.accounts.flatMap(row => row.items || []).find(row => row.auth_batch_id && path === `/auth-batches/${row.auth_batch_id}/items/${row.record_id}/retry`);
+  if (auth) return ['completed', 'downloaded'].includes(auth.export_state);
   const item = batch.accounts.flatMap(row => row.items || []).find(row => path === `/subscriptions/${row.record_id}/retry`);
   return !!item && (item.record_state == null ? item.state === 'completed' : item.record_state === 'completed');
 }

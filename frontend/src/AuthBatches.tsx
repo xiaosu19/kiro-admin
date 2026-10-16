@@ -104,14 +104,14 @@ export function AuthBatchView({ batch, busy, onAction, onDownload, onChallenge }
         {batch.group_scope.groups.map(group => <tr key={group.id}>
           <td>{group.name}<small>{group.account_name} · {group.account_number}</small></td>
           <td>纳入 {group.eligible_count} / {group.total} 人<small>跳过 {group.skipped_count} 人</small></td>
-          <td>成功 {group.states?.completed || 0}<small>等待 {["queued", "running", "challenge", "polling"].reduce((n, state) => n + (group.states?.[state as keyof typeof group.states] || 0), 0)} · 未成功 {["failed", "needs_review", "cancelled", "expired"].reduce((n, state) => n + (group.states?.[state as keyof typeof group.states] || 0), 0)}</small></td>
+          <td>成功 {(group.states?.completed || 0) + (group.states?.downloaded || 0)}<small>等待 {["queued", "running", "challenge", "polling"].reduce((n, state) => n + (group.states?.[state as keyof typeof group.states] || 0), 0)} · 未成功 {["failed", "needs_review", "cancelled", "expired"].reduce((n, state) => n + (group.states?.[state as keyof typeof group.states] || 0), 0)}</small></td>
         </tr>)}
       </tbody></table></div>
     </div>}
     {batch.kind === "json_export" && <>
       <p className="muted">当前密码类型显示账号已保存的凭据。仅订阅仍有效的账号可导出；若 AWS 要求首次登录修改密码，会先保存永久密码，再生成 JSON。已有永久密码会保留。</p>
-      {live ? <p className="muted">全部处理结束后开始计算下载保留时间，可稍后回来下载；{batch.group_scope || batch.group_id ? "同组用户合并为分组名.json" : "用户名.json 统一放在一个文件夹内"}，打包为 ZIP。不包含未成功的 {batch.failure_count} 人。请在下载截止前保存，下载后结果会清除。</p> : <p className="info-note">{batch.state === "downloaded" ? "此批次已经下载。" : batch.state === "expired" ? "此批次已过期。" : "此批次已取消。"}结果已清除，无法再次下载；如需文件，请重新选择用户生成。</p>}
-      {batchCanDownload(batch) && <button className="primary" disabled={busy} onClick={onDownload}>下载 {batch.success_count} 人的 JSON（ZIP）</button>}
+      {live ? <p className="muted">成功项可立即下载；其余用户继续处理或重试。全部处理结束后开始计算下载保留时间，可稍后回来下载；{batch.group_scope || batch.group_id ? "同组用户合并为分组名.json" : "用户名.json 统一放在一个文件夹内"}，打包为 ZIP。不包含未成功的 {batch.failure_count} 人。请在下载截止前保存，每次仅清除已下载的结果。</p> : <p className="info-note">{batch.state === "downloaded" ? "此批次已经下载。" : batch.state === "expired" ? "此批次已过期。" : "此批次已取消。"}结果已清除，无法再次下载；如需文件，请重新选择用户生成。</p>}
+      {batchCanDownload(batch) && <button className="primary" disabled={busy} onClick={onDownload}>下载 {batch.states.completed || 0} 人的 JSON（ZIP）</button>}
     </>}
     {batch.kind !== "json_export" && <p className="muted">每位用户单独处理。失败时也可能已生成一次性密码，请以当前密码类型和错误提示为准；已成功的密码修改不会因取消而恢复。</p>}
     {live && <div className="proxy-buttons auth-batch-actions">
@@ -121,7 +121,7 @@ export function AuthBatchView({ batch, busy, onAction, onDownload, onChallenge }
     <div className="table-wrap"><table className="auth-progress-table"><thead><tr><th>SSO 用户</th><th>进度 / 结果</th><th>当前密码类型</th><th>操作</th></tr></thead><tbody>
       {(batch.items || []).map(item => <tr key={item.record_id}>
         <td className="mono">{item.username}</td>
-        <td><span className={`badge ${item.state === "completed" ? "completed" : ["failed", "needs_review"].includes(item.state) ? "failed" : ""}`}>{authStateLabel[item.state] || "正在处理"}</span>
+        <td><span className={`badge ${item.state === "completed" ? "completed" : ["failed", "needs_review"].includes(item.state) ? "failed" : ""}`}>{item.state === "challenge" && item.can_retry_challenge ? "自动验证未通过，可重试" : authStateLabel[item.state] || "正在处理"}</span>
           {item.state === "running" && <small>{authStageLabel[item.stage] || "正在处理账号"}</small>}
           {item.next_poll_at && ["polling", "queued"].includes(item.state) && <small>下次检查：{date(item.next_poll_at)}</small>}
           <RetryStatus value={item} />
@@ -136,7 +136,7 @@ export function AuthBatchView({ batch, busy, onAction, onDownload, onChallenge }
             {["failed", "needs_review"].includes(item.state) && (item.requires_new_reset
               ? <button className="text-button" disabled={busy} onClick={() => onAction("new_reset", item)}>明确再次重置</button>
               : <button className="text-button" disabled={busy} onClick={() => onAction("retry", item)}>继续处理</button>)}
-            {!["cancelled", "expired"].includes(item.state) && <button className="text-button" disabled={busy} onClick={() => onAction("cancel", item)}>取消此人</button>}
+            {!["downloaded", "cancelled", "expired"].includes(item.state) && <button className="text-button" disabled={busy} onClick={() => onAction("cancel", item)}>取消此人</button>}
           </>}
         </div></td>
       </tr>)}

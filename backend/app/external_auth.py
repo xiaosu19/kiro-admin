@@ -131,7 +131,7 @@ def view(db, batch, detail=True):
                                           'completed_at', 'download_expires_at', 'request_key')}
     result.update(total=len(rows), states=counts, success_count=counts['completed'] + counts['downloaded'],
                   failure_count=sum(counts[s] for s in ('failed', 'needs_review', 'cancelled', 'expired')),
-                  download_ready=batch.state == 'active' and batch.completed_at is not None and counts['completed'] > 0)
+                  download_ready=batch.state == 'active' and counts['completed'] > 0)
     if detail:
         result['items'] = [{k: getattr(i, k) for k in ('id', 'position', 'username', 'portal_url', 'region', 'state',
                            'stage', 'error_code', 'error', 'revision', 'retry_count', 'next_poll_at', 'cancel_requested')}
@@ -276,14 +276,16 @@ def download(batch_id: str, format: Literal['zip', 'json'] = 'zip', item_id: str
     batch = batch_owned(db, batch_id, actor)
     live(db, batch)
     require_session(batch, actor)
-    if not batch.completed_at:
-        raise HTTPException(409, '批次仍在处理，请等待所有账号结束')
     rows = [i for i in items(db, batch) if i.state == 'completed' and i.result_encrypted and
             (item_id is None or i.id == item_id)]
     if not rows or format == 'json' and len(rows) != 1:
         raise HTTPException(409, '没有可下载的对应成功结果，单个 JSON 需选择一个成功账号')
     from .external_result_refresh import refresh_expired_results
     refresh_expired_results(db, batch, actor, rows)
+    rows = [i for i in rows if i.state == 'completed']
+    if not rows:
+        db.commit()
+        raise HTTPException(409, '部分令牌已过期，正在使用原授权刷新；请等待原批次更新后再下载')
     documents = []
     for item in rows:
         try:
@@ -320,8 +322,10 @@ def download(batch_id: str, format: Literal['zip', 'json'] = 'zip', item_id: str
         # The confirmed password is now present in the sensitive downloaded JSON.
         if item.credential_encrypted and decrypt(item.credential_encrypted).get('status') == 'confirmed':
             item.credential_encrypted = None
-    if not any(i.state == 'completed' and i.result_encrypted for i in items(db, batch)):
+    if all(i.state in ('downloaded', 'cancelled', 'expired') for i in items(db, batch)):
         close_batch(db, batch, 'downloaded')
+    else:
+        finish_batch(db, batch)
     audit(db, actor, 'external_export_downloaded', f'粘贴转换批次 {batch.id}；{len(documents)} 个结果')
     db.commit()
     return Response(content, media_type=media, headers={'Content-Disposition': f'attachment; filename="{filename}"',

@@ -40,7 +40,7 @@ def refresh_expired_results(db, batch, actor, rows):
             raise HTTPException(409, '该用户已有其他认证任务，请先核对')
         candidates.append(item)
     if not candidates:
-        return
+        return False
     for item in candidates:
         item.state, item.stage = 'queued', 'refresh_requested'
         item.error = item.error_code = None
@@ -48,6 +48,5 @@ def refresh_expired_results(db, batch, actor, rows):
         item.next_poll_at = item.finished_at = item.lease_token = item.lease_until = None
     batch.completed_at = batch.download_expires_at = None
     audit(db, actor, 'external_export_refresh_requested', f'粘贴转换批次 {batch.id}；{len(candidates)} 个结果')
-    db.commit()
-    # Do not partially consume this download while another success is refreshing.
-    raise HTTPException(409, '部分令牌已过期，正在使用原授权刷新；请等待原批次更新后再下载')
+    db.flush()
+    return True

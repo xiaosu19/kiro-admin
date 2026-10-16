@@ -38,7 +38,7 @@ from .subscription_eligibility import SUBSCRIPTION_REQUIRED, has_confirmed_subsc
 
 router = APIRouter(prefix="/api/auth-batches")
 KINDS = Literal["json_export", "reset_password", "random_password", "custom_password"]
-TERMINAL = ("completed", "failed", "needs_review", "cancelled", "expired")
+TERMINAL = ("completed", "downloaded", "failed", "needs_review", "cancelled", "expired")
 STATES = ("queued", "running", "challenge", "polling") + TERMINAL
 
 
@@ -81,7 +81,7 @@ def batch_owned(db, batch_id, actor):
     return batch
 
 
-def require_access(db, batch, r, *, job=None):
+def require_access(db, batch, r, *, job=None, allow_confirmed_retry=False):
     actor, a = db.get(User, batch.actor_id), db.get(AwsAccount, r.aws_account_id)
     if (
         not actor
@@ -104,7 +104,7 @@ def require_access(db, batch, r, *, job=None):
     if batch.kind == "json_export" and not has_confirmed_subscription_access(r, now()):
         raise HTTPException(409, SUBSCRIPTION_REQUIRED)
     if job and (
-        r.credential_revision != job.credential_revision
+        (r.credential_revision != job.credential_revision and not allow_confirmed_retry)
         or account_fingerprint(a) != job.account_fingerprint
     ):
         raise HTTPException(409, "账号配置或登录凭据已更新，本次结果已失效")
@@ -175,7 +175,7 @@ def require_live(db, batch):
         raise HTTPException(410, "认证批次已取消、下载或过期，请创建新批次")
 
 
-def item_owned(db, batch_id, record_id, actor):
+def item_owned(db, batch_id, record_id, actor, *, allow_confirmed_retry=False):
     batch = batch_owned(db, batch_id, actor)
     job = db.scalar(
         select(AuthJob).where(
@@ -185,8 +185,13 @@ def item_owned(db, batch_id, record_id, actor):
     if not job:
         raise HTTPException(404, "认证任务不存在")
     r = owned(db, record_id, actor)
-    require_access(db, batch, r, job=job)
-    return batch, job, r, db.get(RecordOperation, job.id)
+    op = db.get(RecordOperation, job.id)
+    confirmed_retry = (allow_confirmed_retry and batch.kind == 'json_export'
+                       and op.state in ('failed', 'needs_review') and job.reset_state != 'pending'
+                       and r.credential_state == 'permanent' and bool(r.password_encrypted)
+                       and not r.credential_recovery_encrypted)
+    require_access(db, batch, r, job=job, allow_confirmed_retry=confirmed_retry)
+    return batch, job, r, op
 
 
 def batch_view(db, batch, details=True):
@@ -213,13 +218,12 @@ def batch_view(db, batch, details=True):
     result.update(
         total=len(rows),
         states=counts,
-        success_count=counts["completed"],
+        success_count=counts["completed"] + counts["downloaded"],
         failure_count=sum(
             counts[k] for k in ("failed", "needs_review", "cancelled", "expired")
         ),
         download_ready=batch.kind == "json_export"
         and batch.state == "active"
-        and batch.completed_at is not None
         and counts["completed"] > 0,
     )
     from .group_json_exports import batch_scope_view
@@ -471,21 +475,26 @@ def cancel(
 
 
 def zip_results(db, batch, *, refresh_expired=False):
-    """Validate a terminal live batch and collect results without consuming it."""
+    """Collect completed results without changing unfinished siblings."""
     from .security import decrypt
 
     finish_batch(db, batch)
-    if batch.kind != "json_export" or batch.completed_at is None:
-        raise HTTPException(409, "请等待 JSON 批次处理完成后下载")
+    if batch.kind != "json_export":
+        raise HTTPException(409, "本批次不是 JSON 导出任务")
     from .group_export_models import AuthExportScope
     if refresh_expired or db.get(AuthExportScope, batch.id):
         from .auth_result_refresh import refresh_expired_results
-        refresh_expired_results(db, batch)
+        if refresh_expired_results(db, batch, defer_commit=True):
+            from .provisioning_auth_window import parent_download_window
+            parent_download_window(db, batch, now())
     included, excluded = [], 0
     for job in jobs(db, batch):
+        op, secret = db.get(RecordOperation, job.id), db.get(AuthSecret, job.id)
+        if op.state != "completed" or not secret.result_encrypted:
+            excluded += 1
+            continue
         r = db.get(Subscription, job.record_id)
         require_access(db, batch, r, job=job)
-        op, secret = db.get(RecordOperation, job.id), db.get(AuthSecret, job.id)
         if op.state == "completed" and secret.result_encrypted:
             if decrypt(secret.result_encrypted)["expiresAt"] <= time.time():
                 secret.result_encrypted = None
@@ -501,6 +510,27 @@ def zip_results(db, batch, *, refresh_expired=False):
     return included, excluded
 
 
+def consume_results(db, batch, included):
+    """Clear only delivered results; failures retain their explicit retry path."""
+    from .automatic_retries import settle_retry
+
+    results = {record.id: encrypted for record, encrypted in included}
+    rows = jobs(db, batch)
+    for job in rows:
+        if job.record_id not in results:
+            continue
+        op, secret = db.get(RecordOperation, job.id), db.get(AuthSecret, job.id)
+        if op.state != "completed" or secret.result_encrypted != results[job.record_id]:
+            raise HTTPException(409, "JSON 结果在打包期间已变化，请刷新原批次")
+        clear_secret(secret)
+        op.state = "downloaded"
+        settle_retry(db, 'auth', job.id)
+    if all(db.get(RecordOperation, j.id).state in ('downloaded', 'cancelled', 'expired') for j in rows):
+        close_batch(db, batch, "downloaded")
+    else:
+        finish_batch(db, batch)
+
+
 @router.post("/{batch_id}/download")
 def download(
     batch_id: str,
@@ -509,7 +539,9 @@ def download(
     db: Session = Depends(get_db),
 ):
     from .auth_export import build_zip
+    from .security import lock_user_write
 
+    lock_user_write(db, actor, actor.session_version)
     batch = batch_owned(db, batch_id, actor)
     require_live(db, batch)
     included, excluded = zip_results(db, batch, refresh_expired=True)
@@ -538,7 +570,7 @@ def download(
         content = grouped_content(included, {record.id: path for record, _ in included})
     else:
         content = build_zip(included, folder=filename[:-4])
-    close_batch(db, batch, "downloaded")
+    consume_results(db, batch, included)
     audit(
         db,
         actor,
@@ -725,7 +757,7 @@ def retry_item(
 ):
     from .account_dispatcher import resource_fence
 
-    item_owned(db, batch_id, record_id, actor)
+    item_owned(db, batch_id, record_id, actor, allow_confirmed_retry=body.mode == 'resume')
     # A challenge checkpoint can become visible before its browser closes.
     # Never restart that login while the old worker still owns the record.
     with resource_fence("record", record_id) as acquired:
@@ -735,9 +767,11 @@ def retry_item(
 
 
 def retry_item_locked(batch_id, record_id, body, request, actor, db):
-    from .security import decrypt
+    from .security import decrypt, lock_user_write
 
-    batch, job, r, op = item_owned(db, batch_id, record_id, actor)
+    lock_user_write(db, actor, actor.session_version)
+    db.expire_all()
+    batch, job, r, op = item_owned(db, batch_id, record_id, actor, allow_confirmed_retry=body.mode == 'resume')
     require_live(db, batch)
     secret = db.get(AuthSecret, job.id)
     challenge_retry = op.state == "challenge" and restartable_challenge(secret.workflow_encrypted)
@@ -750,7 +784,8 @@ def retry_item_locked(batch_id, record_id, body, request, actor, db):
     if job.reset_state == "pending" and body.mode != "new_reset":
         raise HTTPException(409, "一次性密码结果未知，请明确选择再次重置")
     saved = decrypt(secret.workflow_encrypted) if secret.workflow_encrypted else {}
-    if (body.mode == 'resume' and job.error_code != 'token_expired'
+    newer_credential = job.credential_revision != r.credential_revision
+    if (not newer_credential and body.mode == 'resume' and job.error_code != 'token_expired'
             and (job.stage == 'refresh_requested' or saved.get('refresh_only'))):
         raise HTTPException(409, '原授权刷新失败，请新建授权批次；普通重试不会重新登录或重置密码')
     refresh = (
@@ -758,6 +793,7 @@ def retry_item_locked(batch_id, record_id, body, request, actor, db):
         and body.mode == "resume"
         and job.error_code == "token_expired"
         and secret.workflow_encrypted
+        and not newer_credential
     )
     if (
         r.credential_state == "unknown"
@@ -770,9 +806,15 @@ def retry_item_locked(batch_id, record_id, body, request, actor, db):
         job.stage = "refresh_requested"
     else:
         secret.workflow_encrypted = None
+        job.stage = 'ready'
+    job.credential_revision = r.credential_revision
     secret.answer_encrypted = secret.result_encrypted = None
     if body.mode == "new_reset":
         job.reset_state = "required"
+    elif newer_credential:
+        # This retry adopts a confirmed permanent password from a newer job.
+        # A superseded reset intent must not overwrite that credential.
+        job.reset_state = "none"
     # No native request or OTP reset is replayed by a plain retry. Unknown
     # credential recovery is bounded by the separately retained tried[] budget.
     if batch.kind == "custom_password" and not secret.payload_encrypted:

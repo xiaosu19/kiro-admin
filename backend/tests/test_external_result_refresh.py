@@ -55,32 +55,31 @@ def fake_gateway(item, configuration, guard):
         _check_proxy=guard, proxy=None, close=lambda: None)
 
 
-def test_download_refreshes_legacy_result_and_preserves_other_successes(alice):
+def test_download_refreshes_legacy_result_and_delivers_other_successes(alice):
     batch = admit(alice, json.dumps([json.loads(TEXT) | {'username': n} for n in ('one', 'two')])).json()
     expire(batch)
     completed(batch, 1)
     path = f"/api/external-auth-batches/{batch['id']}/download"
     reply = alice.post(path)
-    assert reply.status_code == 409 and '原授权刷新' in reply.json()['detail']
+    assert reply.status_code == 200 and reply.headers['x-export-count'] == '1'
     progress = alice.get(f"/api/external-auth-batches/{batch['id']}").json()
     assert progress['items'][0]['stage'] == 'refresh_requested'
-    assert progress['items'][1]['state'] == 'completed' and not progress['download_ready']
-    assert all(secret not in reply.text for secret in ('private-access', 'private-refresh', 'Permanent9!'))
+    assert progress['items'][1]['state'] == 'downloaded' and not progress['download_ready']
+    assert all(secret not in json.dumps(progress) for secret in ('private-access', 'private-refresh', 'Permanent9!'))
     RefreshTransport.calls = []
     for _ in range(4):
         assert run_one(gateway_factory=fake_gateway, auth_factory=RefreshTransport)
     assert not run_one(gateway_factory=fake_gateway, auth_factory=RefreshTransport)
     assert RefreshTransport.calls == ['create_token', 'profiles', 'usage']
     response = alice.post(path)
-    assert response.status_code == 200 and response.headers['x-export-count'] == '2'
+    assert response.status_code == 200 and response.headers['x-export-count'] == '1'
     with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
         paths = {name.split('/')[-1]: name for name in archive.namelist()}
-        assert set(paths) == {'one.json', 'two.json'}
+        assert set(paths) == {'one.json'}
         assert all(len(name.split('/')) == 2 for name in paths.values())
         assert len({name.split('/')[0] for name in paths.values()}) == 1
         first = json.loads(archive.read(paths['one.json']))[0]
         assert first['accessToken'] == 'fresh-access' and first['password'] == 'Permanent9!'
-        assert json.loads(archive.read(paths['two.json']))[0]['accessToken'] == 'private-access'
 
 
 @pytest.mark.parametrize('changes', [

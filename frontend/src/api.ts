@@ -791,7 +791,7 @@ export interface AuthBatchInput {
   group_id?: string;
   password?: string;
 }
-export type AuthItemState = "queued" | "running" | "challenge" | "polling" | "completed" | "failed" | "needs_review" | "cancelled" | "expired";
+export type AuthItemState = "queued" | "running" | "challenge" | "polling" | "completed" | "downloaded" | "failed" | "needs_review" | "cancelled" | "expired";
 export interface AuthItem extends RetryProgress {
   record_id: string;
   operation_id: string;

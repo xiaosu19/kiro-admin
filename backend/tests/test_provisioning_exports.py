@@ -126,7 +126,7 @@ def test_aggregate_json_zip_private_single_use_and_no_provisioning_writes(alice,
     assert gateway.events == writes
 
 
-def test_aggregate_json_waits_for_challenge_and_excludes_expired_terminal_result(alice, gateway):
+def test_aggregate_json_download_keeps_challenge_then_excludes_expired_result(alice, gateway):
     parent = drive(admit(alice, intent(quantity=2)).json(), alice)
     path = f"/api/provisioning-batches/{parent['id']}/download"
     drain(DoneAuth, AuthGateway)
@@ -135,15 +135,15 @@ def test_aggregate_json_waits_for_challenge_and_excludes_expired_terminal_result
         db.get(models.RecordOperation, second['auth_job_id']).state = 'challenge'
         db.get(models.AuthBatch, second['auth_batch_id']).completed_at = None
         db.commit()
-    assert alice.post(path).status_code == 409
+    response = alice.post(path)
+    assert response.status_code == 200 and response.headers['x-export-count'] == '1'
     with SessionLocal() as db:
-        assert db.get(models.AuthSecret, first['auth_job_id']).result_encrypted
+        assert db.get(models.AuthSecret, first['auth_job_id']).result_encrypted is None
+        assert db.get(models.RecordOperation, second['auth_job_id']).state == 'challenge'
         db.get(models.RecordOperation, second['auth_job_id']).state = 'failed'
         db.get(models.AuthBatch, second['auth_batch_id']).expires_at = models.now() - timedelta(seconds=1)
         db.commit()
-    response = alice.post(path)
-    assert response.status_code == 200, response.text
-    assert response.headers['x-export-count'] == '1' and response.headers['x-excluded-count'] == '1'
+    assert alice.post(path).status_code == 410
 
 
 def test_parent_export_exceeds_1000_without_truncating_and_unknown_password_is_not_leaked(admin, ready):
@@ -178,20 +178,20 @@ def two_accounts(alice):
     return drive(admit(alice, body).json(), alice)
 
 
-def test_parent_zip_aggregates_accounts_and_refuses_a_partly_consumed_scope(alice, gateway):
+def test_parent_zip_downloads_remaining_accounts_after_a_child_download(alice, gateway):
     parent = two_accounts(alice)
     drain(DoneAuth, AuthGateway)
     first, second = parent['accounts']
     own_path = f"/api/provisioning-batches/{parent['id']}/accounts/{first['id']}/download"
     assert alice.post(own_path).status_code == 200
     response = alice.post(f"/api/provisioning-batches/{parent['id']}/download")
-    assert response.status_code == 410 and '已下载' in response.text
+    assert response.status_code == 200 and response.headers['x-export-count'] == '1'
     with SessionLocal() as db:
-        assert db.get(models.AuthSecret, second['items'][0]['auth_job_id']).result_encrypted
-    assert alice.post(f"/api/provisioning-batches/{parent['id']}/accounts/{second['id']}/download").status_code == 200
+        assert db.get(models.AuthSecret, second['items'][0]['auth_job_id']).result_encrypted is None
+    assert alice.post(f"/api/provisioning-batches/{parent['id']}/accounts/{second['id']}/download").status_code == 410
 
 
-def test_consumed_parent_zip_returns_gone_even_while_another_account_waits(alice, gateway):
+def test_consumed_parent_waits_only_when_no_new_success_is_available(alice, gateway):
     parent = two_accounts(alice)
     drain(DoneAuth, AuthGateway)
     first, second = parent['accounts']
@@ -202,7 +202,7 @@ def test_consumed_parent_zip_returns_gone_even_while_another_account_waits(alice
         db.get(models.AuthBatch, item['auth_batch_id']).completed_at = None
         db.commit()
     response = alice.post(f"/api/provisioning-batches/{parent['id']}/download")
-    assert response.status_code == 410 and '已下载' in response.text
+    assert response.status_code == 409
     with SessionLocal() as db:
         assert db.get(models.AuthSecret, item['auth_job_id']).result_encrypted
         assert db.get(models.RecordOperation, item['auth_job_id']).state == 'challenge'
@@ -230,7 +230,7 @@ def test_parent_zip_ready_two_accounts_and_current_credentials_validation(alice,
         assert archive.namelist() == [a['account_number'] + '/' + a['group']['name'] + '.json' for a in parent['accounts']]
 
 
-def test_waiting_auth_admission_cannot_be_silently_excluded(alice, gateway):
+def test_waiting_auth_admission_is_reported_and_does_not_block_success(alice, gateway):
     parent = drive(admit(alice, intent(quantity=2)).json(), alice)
     drain(DoneAuth, AuthGateway)
     with SessionLocal() as db:
@@ -238,9 +238,12 @@ def test_waiting_auth_admission_cannot_be_silently_excluded(alice, gateway):
         item.auth_batch_id = item.auth_job_id = None
         db.commit()
     response = alice.post(f"/api/provisioning-batches/{parent['id']}/download")
-    assert response.status_code == 409
+    assert response.status_code == 200 and response.headers['x-export-count'] == '1'
+    assert response.headers['x-excluded-count'] == '1'
+    view = alice.get(f"/api/provisioning-batches/{parent['id']}").json()
+    assert view['json_download']['waiting_count'] == 1
     with SessionLocal() as db:
-        assert db.get(models.AuthSecret, parent['accounts'][0]['items'][0]['auth_job_id']).result_encrypted
+        assert db.get(models.AuthSecret, parent['accounts'][0]['items'][0]['auth_job_id']).result_encrypted is None
 
 
 def test_concurrent_aggregate_and_ordinary_download_consume_a_result_once(alice, gateway, monkeypatch):

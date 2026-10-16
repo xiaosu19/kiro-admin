@@ -218,9 +218,9 @@ def download_summary(children, items, batches, ops):
             continue
         batch, op = batches.get(item.auth_batch_id), ops.get(item.auth_job_id)
         if batch:
-            if batch.state == 'downloaded':
+            if batch.state == 'downloaded' or op and op.state == 'downloaded':
                 consumed += 1
-            if batch.state != 'active' or batch.expires_at <= now() or (batch.download_expires_at and batch.download_expires_at <= now()):
+            elif batch.state != 'active' or batch.expires_at <= now() or (batch.download_expires_at and batch.download_expires_at <= now()):
                 excluded += 1
             elif op and op.state in ('queued', 'running', 'challenge', 'polling'):
                 waiting += 1
@@ -236,13 +236,15 @@ def download_summary(children, items, batches, ops):
                  if i.account_batch_id in requested and i.auth_batch_id in batches
                  and batches[i.auth_batch_id].state == 'active'
                  and batches[i.auth_batch_id].download_expires_at]
-    return {'ready': bool(included and not waiting and not consumed), 'available_count': included,
+    return {'ready': bool(included), 'available_count': included,
             'excluded_count': excluded, 'waiting_count': waiting, 'consumed_count': consumed, 'requested': bool(requested),
             'download_expires_at': min(deadlines) if deadlines and not waiting else None}
 
 
 def download(db, actor, request, batch_id, account_batch_id=None):
     from . import auth_batches
+    from .security import lock_user_write
+    lock_user_write(db, actor, actor.session_version)
     batch, child = owned_scope(db, actor, batch_id, account_batch_id, private=True)
     all_children = list(db.scalars(select(ProvisioningAccountBatch).where(ProvisioningAccountBatch.batch_id == batch.id).order_by(ProvisioningAccountBatch.position)))
     children = [child] if child else all_children
@@ -256,10 +258,6 @@ def download(db, actor, request, batch_id, account_batch_id=None):
     # Check every live job before touching any successful secret. A challenge is
     # never closed merely because a different user's JSON is ready.
     summary = download_summary(children, selected, linked, ops)
-    if summary['consumed_count']:
-        raise HTTPException(410, '部分 JSON 已下载并清理，不能再次生成完整 ZIP；请分别下载其他尚未下载的账号批次')
-    if summary['waiting_count']:
-        raise HTTPException(409, '请等待所选 JSON 任务完成；需要授权的用户请先完成官方 AWS 授权')
     validate_result_links(db, batch, selected, children, linked, ops)
     # Queue every expired result in this range in one submission. Returning on
     # the first child would make a large export require hundreds of clicks.
@@ -271,8 +269,6 @@ def download(db, actor, request, batch_id, account_batch_id=None):
     if refreshing:
         from .provisioning_auth_window import parent_download_window
         parent_download_window(db, next(iter(linked.values())), now())
-        db.commit()
-        raise HTTPException(409, '部分令牌已过期，已安排原授权刷新或标记失败；请等待原批次更新后再下载')
     included, excluded, consumed = [], len([i for i in selected if not i.auth_batch_id]), []
     for auth_id in dict.fromkeys(i.auth_batch_id for i in selected if i.auth_batch_id):
         auth = linked.get(auth_id)
@@ -284,17 +280,19 @@ def download(db, actor, request, batch_id, account_batch_id=None):
         results, skipped = auth_batches.zip_results(db, auth)
         included.extend(results)
         excluded += skipped
-        consumed.append(auth)
+        if results:
+            consumed.append((auth, results))
     if not included:
         db.commit()
-        raise HTTPException(410 if not consumed else 409, '没有可下载的 JSON 结果；结果可能已下载、过期或转换失败')
+        closed = all(auth.state != 'active' for auth in linked.values()) and not summary['waiting_count']
+        raise HTTPException(410 if closed else 409, '没有可下载的 JSON 结果；结果可能已下载、过期或转换失败')
     # Preserve account position then numeric item position even if an auth batch
     # contains multiple linked jobs in a future coordinator version.
     order = {i.record_id: n for n, i in enumerate(selected)}
     included.sort(key=lambda row: order[row[0].id])
     content = build_zip(included, zip_member_paths(all_children, selected))
-    for auth in consumed:
-        auth_batches.close_batch(db, auth, 'downloaded')
+    for auth, results in consumed:
+        auth_batches.consume_results(db, auth, results)
     audit(db, actor, 'provisioning_zip_downloaded', f'批次 {batch.id}；账号批次 {account_batch_id or "全部"}；成功 {len(included)}；排除 {excluded}', request=request)
     db.commit()
     return Response(content, media_type='application/zip', headers={

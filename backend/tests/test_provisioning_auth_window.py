@@ -26,7 +26,7 @@ def test_linked_result_survives_while_parent_is_still_waiting(alice, gateway, mo
     with SessionLocal() as db:
         assert db.get(models.RecordOperation, second["auth_job_id"]).state == "queued"
         assert db.get(models.AuthSecret, first["auth_job_id"]).result_encrypted
-    assert alice.post(f"/api/provisioning-batches/{parent['id']}/download").status_code == 409
+    assert alice.get(f"/api/provisioning-batches/{parent['id']}").json()["json_download"]["ready"] is True
     later = models.now() + timedelta(minutes=16)
     monkeypatch.setattr(auth_batches, "now", lambda: later)
     auth_jobs.expire_batches()
@@ -37,7 +37,7 @@ def test_linked_result_survives_while_parent_is_still_waiting(alice, gateway, mo
             "An early successful result must remain while its parent is waiting")
 
 
-def test_expired_early_token_does_not_consume_the_parent_as_partial_success(alice, gateway):
+def test_expired_early_token_keeps_its_workflow_while_valid_sibling_downloads(alice, gateway):
     parent = drive(admit(alice, intent(quantity=2)).json(), alice)
     drain(DoneAuth, AuthGateway)
     first, second = parent["accounts"][0]["items"]
@@ -48,12 +48,10 @@ def test_expired_early_token_does_not_consume_the_parent_as_partial_success(alic
         secret.result_encrypted = encrypt(result)
         db.commit()
     response = alice.post(f"/api/provisioning-batches/{parent['id']}/download")
-    assert response.status_code == 409, (
-        response.status_code, response.headers.get("x-export-count"),
-        response.headers.get("x-excluded-count"))
+    assert response.status_code == 200 and response.headers["x-export-count"] == "1"
     with SessionLocal() as db:
         assert db.get(models.AuthSecret, first["auth_job_id"]).workflow_encrypted
-        assert db.get(models.AuthSecret, second["auth_job_id"]).result_encrypted
+        assert db.get(models.AuthSecret, second["auth_job_id"]).result_encrypted is None
 
 
 @pytest.mark.parametrize('unadmitted', [False, True])
@@ -130,19 +128,19 @@ def test_parent_refreshes_original_oidc_job_without_reset_or_relogin(alice, gate
     writes, resets, starts = list(gateway.events), AuthGateway.resets, RefreshableAuth.starts
     expire_result(first)
     path = f"/api/provisioning-batches/{parent['id']}/download"
-    assert alice.post(path).status_code == 409
+    assert alice.post(path).status_code == 200
     with SessionLocal() as db:
         job = db.get(models.AuthJob, first['auth_job_id'])
         assert job.stage == 'refresh_requested'
         assert db.get(models.RecordOperation, job.id).state == 'queued'
         assert db.get(models.Subscription, first['record_id']).active_operation_id == job.id
         assert db.get(models.AuthSecret, job.id).workflow_encrypted
-        assert db.get(models.AuthSecret, second['auth_job_id']).result_encrypted
-        assert db.get(models.AuthBatch, second['auth_batch_id']).download_expires_at is None
+        assert db.get(models.AuthSecret, second['auth_job_id']).result_encrypted is None
+        assert db.get(models.RecordOperation, second['auth_job_id']).state == 'downloaded'
     assert alice.post(path).status_code == 409
     drain(RefreshableAuth, AuthGateway)
     result = alice.post(path)
-    assert result.status_code == 200 and result.headers['x-export-count'] == '2'
+    assert result.status_code == 200 and result.headers['x-export-count'] == '1'
     assert RefreshableAuth.refreshes == 1 and RefreshableAuth.starts == starts
     assert AuthGateway.resets == resets and gateway.events == writes
 
@@ -159,10 +157,10 @@ def test_manual_download_refreshes_original_tokens_without_relogin(alice):
         job_id = job.id
     expire_result({'auth_job_id': job_id})
     path = f"/api/auth-batches/{batch['id']}/download"
-    assert alice.post(path).status_code == 409
+    assert alice.post(path).status_code == 200
     drain(RefreshableAuth, AuthGateway)
     response = alice.post(path)
-    assert response.status_code == 200 and response.headers['x-export-count'] == '2'
+    assert response.status_code == 200 and response.headers['x-export-count'] == '1'
     assert RefreshableAuth.starts == 2 and RefreshableAuth.refreshes == 1
 
 
@@ -193,7 +191,7 @@ def test_failed_refresh_is_terminal_and_does_not_restart_login(alice, gateway):
     first = parent['accounts'][0]['items'][0]
     expire_result(first)
     path = f"/api/provisioning-batches/{parent['id']}/download"
-    assert alice.post(path).status_code == 409
+    assert alice.post(path).status_code == 200
 
     class FailedRefresh(RefreshableAuth):
         def begin_refresh(self, sealed):
@@ -209,8 +207,7 @@ def test_failed_refresh_is_terminal_and_does_not_restart_login(alice, gateway):
     retry = alice.post(f"/api/auth-batches/{first['auth_batch_id']}/items/{first['record_id']}/retry", json={'mode': 'resume'})
     assert retry.status_code == 409 and '新建授权批次' in retry.text
     result = alice.post(path)
-    assert result.status_code == 200 and result.headers['x-export-count'] == '1'
-    assert result.headers['x-excluded-count'] == '1'
+    assert result.status_code == 409
 
 
 @pytest.mark.parametrize('change', ['credential', 'active_operation'])
@@ -245,13 +242,13 @@ def test_multiple_group_download_refreshes_without_consuming_successful_members(
         item = {'auth_job_id': job.id}
     expire_result(item)
     path = f"/api/auth-batches/{batch['id']}/download"
-    assert alice.post(path).status_code == 409
+    assert alice.post(path).status_code == 200
     with SessionLocal() as db:
         assert db.get(models.AuthSecret, item['auth_job_id']).workflow_encrypted
         assert db.get(models.AuthBatch, batch['id']).state == 'active'
     drain(RefreshableAuth, AuthGateway)
     result = alice.post(path)
-    assert result.status_code == 200 and result.headers['x-export-count'] == '2'
+    assert result.status_code == 200 and result.headers['x-export-count'] == '1'
 
 
 def test_manual_retry_retains_successful_sibling_past_its_previous_deadline(alice, gateway, monkeypatch):

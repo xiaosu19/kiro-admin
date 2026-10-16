@@ -103,11 +103,12 @@ test("widget initialization forwards only thirteen public CAPTCHA fields", () =>
   assert.doesNotMatch(JSON.stringify(init), /forbidden|frame_origin|frame_url/);
 });
 
-test("partial ZIP is available only after all items are terminal and never after purge", () => {
+test("partial ZIP is available while siblings are processing and never after purge", () => {
   const batch = { kind: "json_export", state: "active", download_ready: true, completed_at: "date", success_count: 1,
     states: { completed: 1, failed: 1 }, items: [ { record_id: "ok", state: "completed" }, { record_id: "failed", state: "failed" }, { record_id: "unknown", state: "needs_review", requires_new_reset: true } ] };
   assert.equal(batchCanDownload(batch), true);
-  for (const patch of [{ completed_at: null }, { state: "downloaded" }, { state: "expired" }, { states: { running: 1 } }, { success_count: 0 }])
+  assert.equal(batchCanDownload({ ...batch, completed_at: null, states: { completed: 1, running: 1, challenge: 1 } }), true);
+  for (const patch of [{ state: "downloaded" }, { state: "expired" }, { download_ready: false }, { success_count: 0 }])
     assert.equal(batchCanDownload({ ...batch, ...patch }), false);
   assert.deepEqual(retryableItems(batch).map(item => item.record_id), ["failed"], "normal retry must never implicitly reset unknown OTP");
 });

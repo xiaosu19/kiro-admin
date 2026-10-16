@@ -6,7 +6,7 @@ export const authKindLabel: Record<AuthKind, string> = {
 };
 export const authStateLabel: Record<string, string> = {
   queued: "等待处理", running: "正在处理", challenge: "等待人工验证", polling: "等待授权结果",
-  completed: "已完成", failed: "处理失败", needs_review: "待核对", cancelled: "已取消", expired: "已过期",
+  completed: "已完成", downloaded: "已下载并清理", failed: "处理失败", needs_review: "待核对", cancelled: "已取消", expired: "已过期",
 };
 export const authStageLabel: Record<string, string> = {
   ready: "准备处理", register: "准备授权", device: "准备授权", portal: "连接登录服务",
@@ -55,7 +55,7 @@ export function credentialText(c: LoginCredential) {
 }
 export function batchCanDownload(batch: AuthBatch) {
   return batch.kind === "json_export" && batch.state === "active" && batch.download_ready &&
-    !!batch.completed_at && batch.success_count > 0 && ["queued", "running", "challenge", "polling"].every(state => !batch.states[state as keyof typeof batch.states]);
+    batch.success_count > 0;
 }
 export function retryableItems(batch: AuthBatch) {
   return (batch.items || []).filter(item => (["failed", "needs_review"].includes(item.state) || item.state === "challenge" && item.can_retry_challenge) && !item.requires_new_reset && !item.cancel_requested);

@@ -129,7 +129,8 @@ def test_single_then_zip_download_partial_results_are_real_private_and_single_us
     with zipfile.ZipFile(io.BytesIO(archive.content)) as file:
         assert len(file.namelist()) == 1 and file.namelist()[0].endswith('/two.json')
         assert json.loads(file.read(file.namelist()[0]))[0]['userId'] == 'actual-user'
-    assert alice.post(f"/api/external-auth-batches/{batch['id']}/download").status_code == 410
+    assert alice.post(f"/api/external-auth-batches/{batch['id']}/download").status_code == 409
+    assert alice.get(f"/api/external-auth-batches/{batch['id']}").json()["state"] == "active"
     with SessionLocal() as db:
         assert all(not i.result_encrypted for i in db.scalars(select(ExternalExportItem)))
 

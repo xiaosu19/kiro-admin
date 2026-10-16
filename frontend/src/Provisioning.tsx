@@ -168,8 +168,8 @@ export function ProvisioningDownloads({ actorId, batch, account, disabled, onDow
       onExport: format => onDownload({ path: '/sso-users/export', method: 'POST', body: { ...scope, format } }),
     }]} />}
     <button type="button" className="secondary" disabled={disabled} onClick={() => onDownload({ path: `/provisioning-batches/report?${account ? `account_batch_id=${encodeURIComponent(account.id)}` : `batch_id=${encodeURIComponent(batch.id)}`}`, method: 'GET' })}>下载批次报告</button>
-    {actorId === batch.actor_id && (account ? account.exports.json : meta?.requested) && <button type="button" className="secondary" disabled={disabled || !meta?.ready} onClick={() => onDownload({ path: `/provisioning-batches/${encodeURIComponent(batch.id)}${account ? `/accounts/${encodeURIComponent(account.id)}` : ''}/download`, method: 'POST' })}>下载 JSON ZIP</button>}
-  </div>{meta?.requested && actorId === batch.actor_id && <p className="muted">JSON：可下载 {meta.available_count} 项；等待 {meta.waiting_count} 项；排除 {meta.excluded_count} 项。{meta.consumed_count > 0 ? '部分结果已下载并清理，完整 ZIP 不可再生成；可分别下载剩余账号批次。' : '全部任务结束后开始计算下载保留时间，可离开页面稍后回来下载；下载后认证结果会清理。'}{meta.download_expires_at && <> 下载截止：{date(meta.download_expires_at)}。</>}</p>}</div>;
+    {actorId === batch.actor_id && (account ? account.exports.json : meta?.requested) && <button type="button" className="secondary" disabled={disabled || !meta?.ready} onClick={() => onDownload({ path: `/provisioning-batches/${encodeURIComponent(batch.id)}${account ? `/accounts/${encodeURIComponent(account.id)}` : ''}/download`, method: 'POST' })}>下载已成功 JSON ZIP</button>}
+  </div>{meta?.requested && actorId === batch.actor_id && <p className="muted">JSON：可下载 {meta.available_count} 项；等待 {meta.waiting_count} 项；未成功 {meta.excluded_count} 项；已下载 {meta.consumed_count} 项。成功项可立即下载，未完成或失败项保留，可继续处理或重试。每次只下载尚未领取的成功结果；全部任务结束后开始计算下载保留时间。{meta.download_expires_at && <> 下载截止：{date(meta.download_expires_at)}。</>}</p>}</div>;
 }
 
 function RecoveryButton({ recovery, disabled, run }: { recovery: Recovery; disabled: boolean; run: (path: string, body?: unknown) => void }) {
@@ -209,7 +209,7 @@ export function AccountProgress({ row, batch, user, disabled, run, download, onA
     <ProvisioningDownloads actorId={user.id} batch={batch} account={row} disabled={disabled} onDownload={download} />
     <div className="table-wrap"><table><thead><tr><th>内部 ID / 真实用户名</th><th>开通状态</th><th>开通时间</th><th>JSON 转换</th><th>恢复</th></tr></thead><tbody>{row.items?.map(item => <tr key={item.record_id}>
       <td><strong className="mono">{item.internal_id}</strong><small className="mono">{item.username}</small></td><td><State state={item.propagation_state === "waiting" ? "等待同步" : item.state} /><small>{item.propagation_state === 'waiting' ? '等待同步' : provisioningPhases[item.phase] || item.phase}</small>{item.propagation_state !== 'waiting' && <RetryStatus value={item} />}{item.error && !item.propagation_state && <small className="error-text">{item.error}</small>}</td><td>{item.subscribed_at ? date(item.subscribed_at) : '等待确认'}</td>
-      <td>{exportStates[item.export_state] || item.export_state}{item.export_retry && <RetryStatus value={item.export_retry} />}{item.export_error && <small className="error-text">{item.export_error}</small>}{item.auth_batch_id && <button type="button" className="text-button" onClick={() => onAuth(item.auth_batch_id!)} disabled={disabled}>授权与转换进度</button>}</td>
+      <td>{item.export_state === 'challenge' && item.export_recovery ? '自动验证未通过，可重试' : exportStates[item.export_state] || item.export_state}{item.export_retry && <RetryStatus value={item.export_retry} />}{item.export_error && <small className="error-text">{item.export_error}</small>}{item.export_recovery && user.id === batch.actor_id && <button type="button" className="text-button" disabled={disabled} onClick={() => run(item.export_recovery!.path.replace(/^\/api/, ''), item.export_recovery!.body)}>重试 JSON</button>}{item.auth_batch_id && <button type="button" className="text-button" onClick={() => onAuth(item.auth_batch_id!)} disabled={disabled}>授权与转换进度</button>}</td>
       <td>{item.recovery && <RecoveryButton recovery={item.recovery} disabled={disabled} run={run} />}</td>
     </tr>)}</tbody></table></div>
   </section>;
@@ -244,8 +244,12 @@ export function ProvisioningBatchDetail({ id, user, scope, notify, access }: { i
         else setError((e as Error).message);
         if (!wasPending && e instanceof Error && 'status' in e && Number(e.status) < 500 && ![408, 429].includes(Number(e.status))) { sessionStorage.removeItem(storageKey); saved.current = null; setPending(null); }
         // Legacy retries have no replay key: an accepted retry can later return
-        // 409. Only a fresh read proving that exact step completed resolves it.
-        if (wasPending && e instanceof Error && 'status' in e && Number(e.status) === 409 && /^\/(groups|subscriptions)\/[^/]+\/retry$/.test(request.path)) {
+        // 409 (or 410 after its JSON was downloaded). Only a fresh read proving
+        // that exact step completed resolves the uncertain request.
+        const authRetry = /^\/auth-batches\/[^/]+\/items\/[^/]+\/retry$/.test(request.path);
+        if (wasPending && e instanceof Error && 'status' in e
+            && (Number(e.status) === 409 || (authRetry && Number(e.status) === 410))
+            && (authRetry || /^\/(?:groups|subscriptions)\/[^/]+\/retry$/.test(request.path))) {
           try {
             const latest = await groupRequest<ProvisioningBatch>(`/provisioning-batches/${encodeURIComponent(id)}`, 'GET', undefined, current);
             if (latest && current() && latest.id === id && latest.actor_id === batch?.actor_id && completedLegacyRecovery(latest, request.path)) {

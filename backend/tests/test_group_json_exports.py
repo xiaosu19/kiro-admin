@@ -194,7 +194,8 @@ def test_partial_group_export_frozen_number_paths_real_schema_and_single_use(ali
     with SessionLocal() as db:
         assert all(secret.result_encrypted is None for secret in db.scalars(select(AuthSecret)))
         assert all(not db.get(Subscription, rid).counted for rid in records)
-    assert alice.post(f"/api/auth-batches/{batch['id']}/download").status_code == 410
+    assert alice.post(f"/api/auth-batches/{batch['id']}/download").status_code == 409
+    assert alice.get(f"/api/auth-batches/{batch['id']}").json()["state"] == "active"
 
 
 def test_foreign_groups_and_csrf_cannot_preview_or_admit(alice, bob):

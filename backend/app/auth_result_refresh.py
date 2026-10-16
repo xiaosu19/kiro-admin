@@ -18,9 +18,11 @@ def refresh_expired_results(db, batch, *, defer_commit=False):
 
     candidates = []
     for job in jobs(db, batch):
+        operation, secret = db.get(RecordOperation, job.id), db.get(AuthSecret, job.id)
+        if operation.state != 'completed' or not secret.result_encrypted:
+            continue
         record = db.get(Subscription, job.record_id)
         _, account = require_access(db, batch, record, job=job)
-        operation, secret = db.get(RecordOperation, job.id), db.get(AuthSecret, job.id)
         if (operation.state == 'completed' and secret.result_encrypted
                 and decrypt(secret.result_encrypted)['expiresAt'] <= time.time()):
             if (job.cancel_requested or record.active_operation_id not in (None, job.id)

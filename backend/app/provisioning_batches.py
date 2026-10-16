@@ -440,7 +440,8 @@ def require_view_scope(db, batch, actor):
 
 def batch_view(db, batch, detail=True, actor=None):
     from .provisioning_coordinator import allowed_actions
-    from .models import Subscription, RecordOperation, AuthBatch, AuthJob, GroupJob
+    from .models import Subscription, RecordOperation, AuthBatch, AuthJob, AuthSecret, GroupJob
+    from .auth_retry import can_resume
     from .automatic_retries import retry_view
     from .retry_models import AutomaticRetry
     from sqlalchemy import and_, or_
@@ -459,6 +460,10 @@ def batch_view(db, batch, detail=True, actor=None):
         ProvisioningAccountBatch.batch_id == batch.id)
     auth_ops = {o.id: o for o in db.scalars(select(RecordOperation).where(RecordOperation.id.in_(auth_ids)))}
     auth_jobs = {j.id: j for j in db.scalars(select(AuthJob).where(AuthJob.id.in_(auth_ids)))}
+    auth_secrets = {s.job_id: s for s in db.scalars(select(AuthSecret).join(
+        RecordOperation, RecordOperation.id == AuthSecret.job_id).where(
+        AuthSecret.job_id.in_(auth_ids), RecordOperation.state.in_(('challenge', 'failed', 'needs_review'))))
+    } if detail and actor and batch.actor_id == actor.id else {}
     auth_batch_ids = select(ProvisioningItem.auth_batch_id).join(ProvisioningAccountBatch).where(
         ProvisioningAccountBatch.batch_id == batch.id)
     auth_batches = {b.id: b for b in db.scalars(select(AuthBatch).where(AuthBatch.id.in_(auth_batch_ids)))}
@@ -561,6 +566,12 @@ def batch_view(db, batch, detail=True, actor=None):
                     export_error=(item.export_error or (auth.error if auth else None)) if private_auth else None)
                 if private_auth and auth_job:
                     view['export_retry'] = retry_view(db, 'auth', auth_job.id, active=bool(auth and auth.state in ('queued', 'running', 'polling')), rows=retry_rows, state=auth.state if auth else None)
+                    if (auth_batch and auth_batch.state == 'active' and auth_batch.expires_at > now()
+                            and (not auth_batch.download_expires_at or auth_batch.download_expires_at > now())
+                            and can_resume(auth_job, auth, record, auth_secrets.get(auth_job.id))):
+                        view['export_recovery'] = {'kind': 'auth_retry', 'method': 'POST',
+                            'path': f'/api/auth-batches/{auth_batch.id}/items/{item.record_id}/retry',
+                            'body': {'mode': 'resume'}, 'read_only': False}
                 row['items'].append(view)
         if private_auth:
             from .provisioning_exports import download_summary

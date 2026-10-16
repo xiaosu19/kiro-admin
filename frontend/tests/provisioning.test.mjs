@@ -98,6 +98,55 @@ function find(node, predicate) {
   if (Array.isArray(node)) { for (const child of node) { const value = find(child, predicate); if (value) return value; } return null; }
   return predicate(node) ? node : find(node.props?.children, predicate);
 }
+test('conversion retry survives remount and targets only the settled auth job', async () => {
+  const { AccountProgress } = await loadSource('Provisioning');
+  const calls = [];
+  const recovery = { kind: 'auth_retry', method: 'POST', path: '/api/auth-batches/auth/items/pending/retry', body: { mode: 'resume' }, read_only: false };
+  const row = { id: 'child', batch_number: 'a-01', account_name: 'AWS A', quantity: 2,
+    group: { id: 'g', name: 'a-01' }, state: 'completed', phase: 'done', allowed_actions: [],
+    exports: { csv: true, txt: true, json: true }, stop_policy: { mode: 'none' }, items: [
+      { record_id: 'ok', state: 'completed', export_state: 'completed', internal_id: 'a-01-01', username: 'a-01-01' },
+      { record_id: 'pending', state: 'completed', export_state: 'challenge', export_recovery: recovery,
+        auth_batch_id: 'auth', internal_id: 'a-01-02', username: 'a-01-02' },
+    ] };
+  const props = { row, batch: { id: 'parent', actor_id: 2 }, user: { id: 2 }, disabled: false,
+    run: (...args) => calls.push(args), download() {}, onAuth() {} };
+  for (let index = 0; index < 2; index++) {
+    const host = mountHook(AccountProgress, props);
+    const retry = find(host.current, node => node.type === 'button' && node.props.children === '重试 JSON');
+    assert.ok(retry);
+    retry.props.onClick();
+    assert.deepEqual(calls.at(-1), ['/auth-batches/auth/items/pending/retry', { mode: 'resume' }]);
+    host.render({ ...props, disabled: true });
+    assert.equal(find(host.current, node => node.type === 'button' && node.props.children === '重试 JSON').props.disabled, true);
+    host.unmount();
+  }
+});
+
+test('a lost conversion retry response reconciles only that completed job', () => {
+  const scope = { accounts: [{ group: { id: 'g' }, items: [
+    { record_id: 'r', auth_batch_id: 'auth', state: 'completed', export_state: 'failed' },
+  ] }] };
+  const path = '/auth-batches/auth/items/r/retry';
+  assert.equal(logic.completedLegacyRecovery(scope, path), false);
+  scope.accounts[0].items[0].export_state = 'completed';
+  assert.equal(logic.completedLegacyRecovery(scope, path), true);
+  assert.equal(logic.completedLegacyRecovery(scope, '/auth-batches/different/items/r/retry'), false);
+  scope.accounts[0].items[0].export_state = 'challenge';
+  assert.equal(logic.completedLegacyRecovery(scope, path), false);
+});
+
+test('provisioning offers successful ZIP without waiting for challenges or previous downloads', async () => {
+  const { ProvisioningDownloads } = await loadSource('Provisioning');
+  const calls = [];
+  const tree = ProvisioningDownloads({ actorId: 2, batch: { id: 'b', actor_id: 2,
+    json_download: { requested: true, ready: true, available_count: 11, waiting_count: 4, excluded_count: 0, consumed_count: 2 } },
+    disabled: false, onDownload: value => calls.push(value) });
+  const button = find(tree, node => node.type === 'button' && node.props.children === '下载已成功 JSON ZIP');
+  assert.ok(button); assert.equal(button.props.disabled, false);
+  button.props.onClick();
+  assert.deepEqual(calls, [{ path: '/provisioning-batches/b/download', method: 'POST' }]);
+});
 test('shared stop fields support scoped controlled days and dates without leaking another account defaults', () => {
   let changed;
   const props = { namePrefix: 'a:', labelPrefix: 'a ', nativeGroup: true, value: { mode: 'days', days: 8 }, onChange: value => { changed = value; } };
@@ -193,18 +242,19 @@ test('provisioning detail clears private rows and actions after authoritative fo
   assert.ok(calls.every(call => call.options.method === 'GET')); host.unmount();
 });
 
-for (const scenario of ['group', 'sso', 'unfinished', 'replacement', 'unreadable', 'foreign', 'keyed'])
+for (const scenario of ['group', 'sso', 'unfinished', 'replacement', 'unreadable', 'foreign', 'keyed', 'auth_completed', 'auth_downloaded', 'auth_expired'])
   test(`pending recovery reconciles ${scenario} only from the matching completed target`, async t => {
     const { ProvisioningBatchDetail } = await loadSource('Provisioning');
-    const keyed = scenario === 'keyed', groupRetry = !['sso', 'replacement'].includes(scenario);
-    const path = keyed ? '/provisioning-batches/parent/accounts/child/recheck' : groupRetry ? '/groups/g/retry' : '/subscriptions/r/retry';
-    const body = keyed ? { request_key: 'original-recovery-request-key' } : undefined;
-    const recovery = { kind: groupRetry ? 'group_retry' : 'sso_retry', method: 'POST', path: '/api' + path, read_only: false };
+    const authRetry = scenario.startsWith('auth_'), keyed = scenario === 'keyed', groupRetry = !authRetry && !['sso', 'replacement'].includes(scenario);
+    const path = keyed ? '/provisioning-batches/parent/accounts/child/recheck' : authRetry ? '/auth-batches/auth/items/r/retry' : groupRetry ? '/groups/g/retry' : '/subscriptions/r/retry';
+    const body = keyed ? { request_key: 'original-recovery-request-key' } : authRetry ? { mode: 'resume' } : undefined;
+    const recovery = { kind: authRetry ? 'auth_retry' : groupRetry ? 'group_retry' : 'sso_retry', method: 'POST', path: '/api' + path, read_only: false };
     const row = { id: 'child', aws_account_id: 1, account_name: 'AWS A', batch_number: 'a-01', quantity: 1,
       plan_id: 1, plan_name: 'Pro', group: { id: 'g', name: 'a-01' }, state: 'needs_review', phase: 'sso',
       group_job_state: 'failed', exports: { csv: true, txt: true, json: false }, allowed_actions: ['recheck'],
       stop_policy: { mode: 'none' }, recovery, items: [{ record_id: 'r', username: 'real-user', internal_id: 'a-01-01',
-        state: 'failed', record_state: 'failed', phase: 'sso', credentials_ready: true, recovery: groupRetry ? null : recovery }] };
+        state: 'failed', record_state: 'failed', phase: 'sso', credentials_ready: true, recovery: groupRetry || authRetry ? null : recovery,
+        auth_batch_id: authRetry ? 'auth' : null, export_state: 'failed', export_recovery: authRetry ? recovery : null }] };
     let parent = { id: 'parent', actor_id: 2, state: 'needs_review', phase: 'sso', created_at: '2026-10-11', accounts: [row], totals: [] };
     const posts = [], gets = [], notices = [];
     const { storage } = environment(t, async (url, options) => {
@@ -214,12 +264,13 @@ for (const scenario of ['group', 'sso', 'unfinished', 'replacement', 'unreadable
         return response(posts.length > 1 && scenario === 'foreign' ? { ...parent, actor_id: 8 } : parent);
       }
       posts.push({ url, body: options.body });
-      if (posts.length > 1) return response({ detail: 'no retryable operation remains' }, 409);
+      if (posts.length > 1) return response({ detail: 'no retryable operation remains' }, ['auth_downloaded', 'auth_expired'].includes(scenario) ? 410 : 409);
       if (scenario !== 'unfinished') {
         const nextRecovery = scenario === 'replacement' ? { ...recovery, kind: 'reset_password', path: '/api/subscriptions/r/operations' } : null;
         parent = { ...parent, state: 'completed', accounts: [{ ...row, state: 'completed', group_job_state: 'completed',
           phase: 'done', recovery: nextRecovery, allowed_actions: [], items: [{ ...row.items[0], state: 'completed',
-            record_state: scenario === 'replacement' ? 'failed' : 'completed', recovery: nextRecovery }] }] };
+            record_state: scenario === 'replacement' ? 'failed' : 'completed', recovery: nextRecovery,
+            export_state: authRetry ? scenario.slice(5) : 'failed', export_recovery: null }] }] };
       }
       return response({ detail: 'response lost after acceptance' }, 503);
     });
@@ -234,7 +285,7 @@ for (const scenario of ['group', 'sso', 'unfinished', 'replacement', 'unreadable
     await find(host.current, node => node.type === 'button' && node.props.children === '继续确认原操作').props.onClick();
     await settle(); host.render();
     assert.deepEqual(posts, [{ url: '/api' + path, body: body && JSON.stringify(body) }, { url: '/api' + path, body: body && JSON.stringify(body) }]);
-    const resolved = ['group', 'sso'].includes(scenario);
+    const resolved = ['group', 'sso', 'auth_completed', 'auth_downloaded'].includes(scenario);
     assert.equal(find(host.current, node => node.props?.row?.id === 'child').props.disabled, !resolved);
     assert.equal(!!storage.get('kiro-provisioning-action:2:parent'), !resolved);
     assert.equal(notices.length, resolved ? 1 : 0);
