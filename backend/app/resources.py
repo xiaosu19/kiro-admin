@@ -218,7 +218,11 @@ def remove_resource(db, resource, body, actor, request):
     if resource.deleted_at:
         return {"ok": True}
     # get_user holds the SQLite write lock, serializing deletion with admission.
-    ensure_no_tasks(db, resource)
+    # Removing an AWS configuration revokes its use locally. Subscriptions,
+    # groups, pending write evidence and schedules remain as historical records;
+    # worker guards reject new writes after this transaction commits.
+    if not isinstance(resource, AwsAccount):
+        ensure_no_tasks(db, resource)
     resource.active = False
     resource.deleted_at = now()
     is_account = isinstance(resource, AwsAccount)

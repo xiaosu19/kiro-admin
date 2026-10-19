@@ -1128,6 +1128,7 @@ def subscription_view(r, db, actor=None, numbered=None):
         "stop_schedule": schedule_view(db.get(StopSchedule, r.id)),
         "owner_name": db.get(User, r.owner_id).display_name,
         "account_name": db.get(AwsAccount, r.aws_account_id).name,
+        "account_deleted_at": db.get(AwsAccount, r.aws_account_id).deleted_at,
         "plan_name": r.plan_name_snapshot
         or (db.get(Plan, r.plan_id).name if r.plan_id else "未绑定套餐"),
         "observed_plan_name": BY_SUBSCRIPTION_TYPE.get(

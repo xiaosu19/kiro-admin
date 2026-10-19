@@ -4,7 +4,7 @@ import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "rea
 import { NavLink } from "react-router-dom";
 import { date, type CancellationMode, type Counter, type GroupActivation, type GroupItem, type LifecycleBatch, type LifecycleItem, type LifecycleKind, type NativeGrant, type NativeOperation, type NativePreview, type Plan, type RecordItem, type User } from "./api";
 import { useRemote } from "./groupRequests";
-import { useLifecycleAdmission, useLifecycleRecheck, useNativePreview } from "./nativeSubscriptionRequests";
+import { useLifecycleAdmission, useLifecycleRecheck, useLifecycleStop, useNativePreview } from "./nativeSubscriptionRequests";
 import { activeNativeGroup, canCancelGroup, canCancelRecord, canSubscribeGroup, intentIds, lifecycleNames, lifecycleStates, nativeAccess, nativeGrantStates, nativeIntent, supportsRecordScheduledCancellation, validLifecycleBatch } from "./nativeSubscriptionsLogic";
 
 type Admission = ReturnType<typeof useLifecycleAdmission>;
@@ -109,9 +109,11 @@ export function NativeSubscriptionDialog({ kind, user, groups = [], records = []
     {admission.error && <p className="error" role="alert">{admission.error}</p>}
   </NativeDialog>;
 }
-export function LifecycleBatchView({ batch, busy, onRecheck }: { batch: LifecycleBatch; busy: boolean; onRecheck: (item: LifecycleItem) => void }) {
+export function LifecycleBatchView({ batch, busy, onRecheck, onStop }: { batch: LifecycleBatch; busy: boolean; onRecheck: (item: LifecycleItem) => void; onStop?: () => void }) {
   return <article className="native-batch" data-batch-id={batch.id}>
     <div className="group-section-heading"><strong>{lifecycleNames[batch.kind]}</strong><small>{date(batch.created_at)}</small></div>
+    {batch.can_stop && onStop && <button type="button" className="danger" disabled={busy} onClick={onStop}>关闭批量取消订阅</button>}
+    {(batch.can_stop || batch.stop_requested) && <p className="info-note">{batch.stop_requested ? "已关闭后续取消操作。" : "关闭后停止尚未发送的取消操作。"}已发送的请求继续核对结果，已取消的订阅不会重新开通。</p>}
     <p className="native-batch-counts" aria-live="polite">共 {batch.total} 项 · {Object.entries(lifecycleStates).map(([state, name]) => `${name} ${batch.states[state as keyof typeof lifecycleStates] || 0}`).join(" · ")}</p>
     <div className="table-wrap"><table><thead><tr><th>对象</th><th>状态</th><th>结果 / 原因</th><th>恢复</th></tr></thead><tbody>{batch.items.map(item => <tr key={item.id}>
       <td>{item.name}<small>{item.principal_type === "GROUP" ? "完整分组 · GROUP" : "所选 SSO 用户"}</small></td><td><span className={`badge ${item.state === "completed" ? "completed" : ["failed", "needs_review"].includes(item.state) ? "failed" : ""}`}>{lifecycleStates[item.state]}</span></td>
@@ -128,6 +130,7 @@ export function LifecycleHistory({ actorId, version = 0, groupId, initialBatch }
   const [selection, setSelection] = useState({ scope, id: initial?.id || null });
   const opened = selection.scope === scope ? selection.id : initial?.id || null;
   const recovery = useLifecycleRecheck(actorId, groupId || "all");
+  const stopping = useLifecycleStop(actorId, `${groupId || "all"}:${opened || ""}`);
   const detail = useRemote<LifecycleBatch>(opened ? `/lifecycle-batches/${encodeURIComponent(opened)}` : null, 3000, actorId);
   useEffect(() => { void batches.refresh(); setSelection({ scope, id: initial?.id || null }); }, [version, initial?.id, scope, batches.refresh]);
   const list = (Array.isArray(batches.data) ? batches.data : []).filter(inScope);
@@ -135,11 +138,14 @@ export function LifecycleHistory({ actorId, version = 0, groupId, initialBatch }
   async function recheck(item: LifecycleItem) {
     if (await recovery.submit(item)) { void batches.refresh(); void detail.refresh(); }
   }
+  async function stop() {
+    if (chosen && await stopping.stop(chosen)) { void batches.refresh(); void detail.refresh(); }
+  }
   return <section className="panel native-history" aria-label="订阅批次与进度"><div className="group-section-heading"><div><h2>订阅批次与进度</h2><p className="muted">最近 100 个批次；已完成、失败和待核对结果逐项保留。待核对只读取 AWS 结果。</p></div><button className="secondary" onClick={() => { void batches.refresh(); void detail.refresh(); }}>刷新批次</button></div>
-    {(recovery.error || batches.error || detail.error) && <p className="error" role="alert">{recovery.error || batches.error || detail.error}</p>}
+    {(stopping.error || recovery.error || batches.error || detail.error) && <p className="error" role="alert">{stopping.error || recovery.error || batches.error || detail.error}</p>}
     {!list.length && !initial && <p className="muted">{batches.loading ? "正在读取订阅批次…" : "暂无订阅批次。"}</p>}
     <div className="native-batch-list">{list.map(batch => <button type="button" className={opened === batch.id ? "secondary active" : "text-button"} key={batch.id} onClick={() => setSelection({ scope, id: batch.id })}>{lifecycleNames[batch.kind]} · {date(batch.created_at)} · 完成 {batch.states.completed}/{batch.total}{batch.states.failed ? ` · 失败 ${batch.states.failed}` : ""}{batch.states.needs_review ? ` · 待核对 ${batch.states.needs_review}` : ""}</button>)}</div>
-    {chosen && <LifecycleBatchView batch={chosen} busy={recovery.busy} onRecheck={item => void recheck(item)} />}
+    {chosen && <LifecycleBatchView batch={chosen} busy={recovery.busy || stopping.busy} onRecheck={item => void recheck(item)} onStop={() => void stop()} />}
   </section>;
 }
 export function NativeGroupHistory({ actorId, group }: { actorId: number; group: GroupItem }) {

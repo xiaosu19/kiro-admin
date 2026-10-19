@@ -12,6 +12,7 @@ export const authStageLabel: Record<string, string> = {
   ready: "准备处理", register: "准备授权", device: "准备授权", portal: "连接登录服务",
   identity: "验证用户名", password: "验证登录密码", change_password: "设置永久密码",
   captcha_recognizing: "自动识别中", captcha_waiting: "等待验证码处理资源", captcha_verified: "验证成功",
+  captcha_retry_wait: "等待自动重试验证码",
   device_session: "确认授权", accept: "确认授权", associate: "确认授权", poll: "等待授权结果",
   profiles: "读取 Kiro 配置", usage: "读取用量", refresh: "更新授权", refresh_requested: "准备更新授权", done: "已完成",
   login: "连接登录服务", signin: "准备登录", workflow: "验证登录信息", whoami: "确认登录身份", exchange: "完成登录", native_success: "已确认登录",
@@ -42,7 +43,7 @@ export function hasConfirmedSubscriptionAccess(r: Pick<RecordItem, "subscription
   return Number.isFinite(expiry) && expiry > instant;
 }
 export function canUseAuthRecord(r: RecordItem, user: User, kind: AuthKind) {
-  return (r.owner_id === user.id || user.role === "admin") && !!r.sso_user_id && !r.sso_deleted_at &&
+  return !r.account_deleted_at && (r.owner_id === user.id || user.role === "admin") && !!r.sso_user_id && !r.sso_deleted_at &&
     ["completed", "failed"].includes(r.state) && !r.operation_pending && !r.operation &&
     (kind !== "json_export" || hasConfirmedSubscriptionAccess(r) && (r.has_password || r.credential_state === "unknown"));
 }

@@ -374,6 +374,8 @@ def mark_pending(op_id, token, clear_password=False, *, frozen_config=None):
         lock_lease(db, op_id, token)
         op, r = load(db, op_id, token)
         payload = json.loads(op.payload)
+        if payload.get("batch_stop_requested"):
+            raise AwsFailure("批量取消订阅已关闭，本项未发送到 AWS")
         if frozen_config is not None:
             account = db.get(AwsAccount, r.aws_account_id)
             schedule = automatic_schedule(db, op)

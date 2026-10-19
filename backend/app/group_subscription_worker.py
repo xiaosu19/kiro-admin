@@ -113,6 +113,8 @@ def before_write(oid, token):
         job_guard(db, op)
         actor = db.get(User, op.actor_id)
         payload = json.loads(op.payload)
+        if payload.get("batch_stop_requested"):
+            raise AwsFailure("批量取消订阅已关闭，本项未发送到 AWS")
         automatic = bool(payload.get("policy_revision"))
         if not automatic and (
             not actor.active
@@ -227,7 +229,7 @@ def fail(oid, token, message, uncertain, *, error=None, frozen_config=None):
                 and schedule_retry(db, "native", oid, error,
                                    mode="reconcile" if uncertain else "retry",
                                    config_hash=frozen_config,
-                                   stopped=provisioning_stopped(db, "native", op))):
+                                   stopped=provisioning_stopped(db, "native", op) or bool(json.loads(op.payload).get("batch_stop_requested")))):
             op.state, op.error = "queued", message
             op.lease_token = op.lease_until = None
             if not uncertain:

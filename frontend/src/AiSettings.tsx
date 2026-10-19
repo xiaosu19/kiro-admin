@@ -25,6 +25,9 @@ const testErrors: Record<string, string> = {
   captcha_invalid_configuration: "请检查接口地址、模型和密钥格式。",
   captcha_timeout: "接口请求超时，请检查网络或调整超时。",
   captcha_provider_failed: "接口请求失败，请检查协议、地址、模型权限、密钥和余额。",
+  captcha_provider_auth: "接口拒绝认证或模型访问，请检查密钥和模型权限。",
+  captcha_provider_balance: "接口提示付费或额度不足，请检查余额。",
+  captcha_provider_rate_limit: "接口请求过于频繁，请稍后重试。",
   captcha_invalid_response: "接口未返回完整的识别文字，请确认模型支持图片输入。",
   recognition_mismatch: "接口已响应，但测试图片识别不正确，请尝试其他视觉模型。",
 };

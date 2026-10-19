@@ -125,7 +125,8 @@ def test_http_failures_never_redirect_retry_or_expose_provider_data(status, capl
 
     with pytest.raises(module().VisionError) as caught:
         provider(handler).recognize(PNG)
-    assert_safe_error(caught, "captcha_provider_failed")
+    assert_safe_error(caught, {400: "captcha_invalid_configuration", 401: "captcha_provider_auth",
+                              403: "captcha_provider_auth", 429: "captcha_provider_rate_limit"}.get(status, "captcha_provider_failed"))
     assert len(calls) == 1
     assert API_KEY not in caplog.text and "private-response" not in caplog.text
 

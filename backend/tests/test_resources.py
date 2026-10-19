@@ -199,7 +199,7 @@ def test_plan_crud_preserves_history_counts_and_catalog_deletion(admin, alice):
     assert alice.get(f"/api/subscriptions/{rid}").json()["plan_name"] == "Kiro Pro"
 
 
-@pytest.mark.parametrize("kind,name", [("aws", "测试 AWS"), ("plans", "Kiro Pro")])
+@pytest.mark.parametrize("kind,name", [("plans", "Kiro Pro")])
 @pytest.mark.parametrize("state", ["queued", "running", "needs_review"])
 def test_removal_blocks_pending_tasks_and_rolls_back(admin, alice, kind, name, state):
     rid = create(alice).json()["id"]
@@ -214,7 +214,7 @@ def test_removal_blocks_pending_tasks_and_rolls_back(admin, alice, kind, name, s
     assert count() == (0, 1, 0, 1)
 
 
-@pytest.mark.parametrize("kind,name", [("aws", "测试 AWS"), ("plans", "Kiro Pro")])
+@pytest.mark.parametrize("kind,name", [("plans", "Kiro Pro")])
 def test_removal_blocks_lifecycle_operations(admin, alice, kind, name):
     Gateway.mode = "ok"
     rid = create(alice).json()["id"]

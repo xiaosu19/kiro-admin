@@ -9,7 +9,53 @@ RESTARTABLE_CAPTCHA_ERRORS = frozenset({
     "captcha_browser_failed", "captcha_provider_failed", "captcha_invalid_response",
     "captcha_unavailable", "captcha_invalid_configuration",
     "captcha_invalid_image", "captcha_browser_unavailable", "captcha_failed",
+    "captcha_provider_auth", "captcha_provider_balance", "captcha_provider_rate_limit",
 })
+
+# A new isolated login may replace a settled challenge, but must never replay a
+# password write or retry permanent provider/configuration failures automatically.
+AUTOMATIC_CAPTCHA_ERRORS = frozenset({
+    "captcha_timeout", "captcha_attempt_limit", "captcha_limit", "captcha_answer_rejected",
+    "captcha_browser_failed", "captcha_provider_failed", "captcha_provider_rate_limit",
+    "captcha_invalid_response", "captcha_invalid_image",
+})
+
+
+def automatic_challenge_reason(sealed):
+    if not restartable_challenge(sealed):
+        return None
+    state = decrypt(sealed)
+    automatic = state.get("captcha_automation", {})
+    reason = automatic.get("reason")
+    last = automatic.get("last_failure_code")
+    if (reason not in AUTOMATIC_CAPTCHA_ERRORS
+            or last and last not in AUTOMATIC_CAPTCHA_ERRORS
+            or state.get("external_authorization") or state.get("refresh_only")):
+        return None
+    return last or reason
+
+
+def record_captcha_outcome(db, actor, family, job_id, sealed):
+    """Keep small diagnostic facts after secret checkpoints have expired."""
+    import json
+    from .security import audit, encrypt
+    from .captcha_errors import safe_captcha_code
+    state = decrypt(sealed)
+    automatic = state.get("captcha_automation", {})
+    status = automatic.get("status")
+    if status not in ("requires_action", "verified") or automatic.get("reported"):
+        return sealed
+    facts = {"family": family, "job_id": job_id, "status": status}
+    for key in ("attempts", "submissions"):
+        value = automatic.get(key)
+        if isinstance(value, int) and 0 <= value <= 1000:
+            facts[key] = value
+    for key in ("reason", "last_failure_code"):
+        if automatic.get(key):
+            facts[key] = safe_captcha_code(automatic[key])
+    audit(db, actor, "auth_captcha_result", json.dumps(facts))
+    automatic["reported"] = True
+    return encrypt(state)
 
 
 def restartable_challenge(sealed):

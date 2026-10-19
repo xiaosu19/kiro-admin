@@ -32,7 +32,7 @@ from .auth_credentials import (
     random_password,
     reset_one_time_password,
 )
-from .aws import AwsGateway
+from .aws import AwsFailure, AwsGateway
 from .config import settings
 from .database import SessionLocal
 from .enterprise_auth import EnterpriseAuth
@@ -317,7 +317,9 @@ def finish_step(job_id, token, progress):
             op.error = "批次已取消或操作者权限已失效"
             r.active_operation_id = None
         else:
-            secret.workflow_encrypted = progress.sealed_state
+            from .auth_retry import automatic_challenge_reason, record_captcha_outcome
+            secret.workflow_encrypted = record_captcha_outcome(
+                db, db.get(User, batch.actor_id), "auth", job_id, progress.sealed_state)
             secret.answer_encrypted = None
             job.revision, job.stage = progress.revision, progress.stage
             automatic = decrypt(progress.sealed_state).get("captcha_automation", {})
@@ -339,6 +341,18 @@ def finish_step(job_id, token, progress):
                 "polling": "polling",
             }[progress.status]
             op.phase = "done" if op.state == "completed" else "ready"
+            reason = automatic_challenge_reason(secret.workflow_encrypted) if op.state == "challenge" else None
+            if (reason and job.reset_state != "pending" and r.credential_state != "unknown"
+                    and r.password_encrypted and not r.credential_recovery_encrypted
+                    and schedule_retry(db, "auth", job_id, AwsFailure("验证码暂未通过", code=reason, retryable=True))):
+                from .retry_models import AutomaticRetry
+                retry = db.get(AutomaticRetry, ("auth", job_id))
+                # The old challenge is settled. The record fence remains held
+                # until its browser closes; the next run uses the saved password.
+                secret.workflow_encrypted = secret.answer_encrypted = None
+                op.state, job.stage = "queued", "captcha_retry_wait"
+                job.next_poll_at = None
+                op.error = f"验证码处理未通过，等待第 {retry.retry_count}/5 次自动重试"
             if op.state == "completed":
                 if batch.kind == "json_export":
                     # Validate once before storing; a failed profile cannot be exported.

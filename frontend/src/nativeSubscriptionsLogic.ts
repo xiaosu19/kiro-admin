@@ -5,7 +5,7 @@ export type LifecycleIntent =
   | { kind: "group_cancel"; body: { group_ids: string[]; cancellation_mode: CancellationMode; request_key: string } }
   | { kind: "user_cancel"; body: { record_ids: string[]; cancellation_mode: CancellationMode; request_key: string } };
 export const lifecycleNames: Record<LifecycleKind, string> = { group_subscribe: "开通原生分组订阅", group_cancel: "取消分组订阅", user_cancel: "批量取消订阅" };
-export const lifecycleStates = { queued: "等待处理", running: "正在处理", completed: "已完成", failed: "处理失败", needs_review: "待核对" };
+export const lifecycleStates = { queued: "等待处理", running: "正在处理", completed: "已完成", failed: "处理失败", needs_review: "待核对", cancelled: "已停止" };
 export const nativeGrantStates = { pending: "等待开通确认", active: "已生效", cancel_scheduled: "已取消续订 · 到期前仍可访问", cancelled: "已取消 · 历史保留", needs_review: "待核对", failed: "处理失败" };
 export function groupSearchPath(scope: { account: string; q: string; member: string }) {
   const query = new URLSearchParams();
@@ -18,7 +18,7 @@ export function filterGroups(groups: GroupItem[], owner: string, state: string) 
   return groups.filter(group => (!owner || group.owner_id === Number(owner)) && (!state || group.state === state));
 }
 export function currentGroupSelection(ids: string[], groups: GroupItem[]) {
-  const available = new Set(groups.filter(group => !group.deleted_at).map(group => group.id));
+  const available = new Set(groups.filter(group => !group.deleted_at && !group.account_deleted_at).map(group => group.id));
   return [...new Set(ids)].filter(id => available.has(id)).slice(0, 100);
 }
 export function nativeAccess(record: RecordItem) {
@@ -33,18 +33,18 @@ export function subscriptionSourceLabel(record: RecordItem) {
 }
 export function activeNativeGroup(group?: GroupItem | null) { return !!group?.native_subscription && ["active", "cancel_scheduled"].includes(group.native_subscription.state); }
 export function canCancelRecord(record: RecordItem) {
-  return record.cancellation_source !== null && !!record.sso_user_id && !record.operation_pending && !record.operation && ["completed", "failed"].includes(record.state) &&
+  return !record.account_deleted_at && record.cancellation_source !== null && !!record.sso_user_id && !record.operation_pending && !record.operation && ["completed", "failed"].includes(record.state) &&
     !record.cancelled_at && ["active", "cancel_scheduled"].includes(record.subscription_status);
 }
 export function supportsRecordScheduledCancellation(records: RecordItem[]) {
   return records.length > 0 && records.every(record => record.supports_scheduled_cancellation && !nativeAccess(record));
 }
 export function canSubscribeGroup(group: GroupItem) {
-  return group.state === "ready" && !group.deleted_at && !group.active_job_id &&
+  return group.state === "ready" && !group.deleted_at && !group.account_deleted_at && !group.active_job_id &&
     (!group.native_subscription || ["cancelled", "failed"].includes(group.native_subscription.state));
 }
 export function canCancelGroup(group: GroupItem) {
-  return group.state === "ready" && !group.deleted_at && !group.active_job_id && group.native_subscription?.state === "active";
+  return group.state === "ready" && !group.deleted_at && !group.account_deleted_at && !group.active_job_id && group.native_subscription?.state === "active";
 }
 export function lifecycleEndpoint(kind: LifecycleKind) {
   return { group_subscribe: "/group-subscriptions", group_cancel: "/group-subscriptions/cancel", user_cancel: "/subscription-cancellations" }[kind];
@@ -82,7 +82,7 @@ export function validLifecycleBatch(value: unknown, intent?: LifecycleIntent): v
   if (!batch.items.every(item => !!item && typeof item.id === "string" && !!item.id && typeof item.name === "string" && typeof item.operation_id === "string" && !!item.operation_id &&
     item.principal_type === (batch.kind === "user_cancel" ? "USER" : "GROUP") && Object.prototype.hasOwnProperty.call(lifecycleStates, item.state) &&
     typeof item.phase === "string" && (item.error === null || typeof item.error === "string"))) return false;
-  if (!Object.keys(lifecycleStates).every(state => batch.states[state as keyof typeof lifecycleStates] === batch.items.filter(item => item.state === state).length)) return false;
+  if (!Object.keys(lifecycleStates).every(state => (batch.states[state as keyof typeof lifecycleStates] ?? (state === "cancelled" ? 0 : undefined)) === batch.items.filter(item => item.state === state).length)) return false;
   const ids = batch.items.map(item => item.id);
   return new Set(ids).size === ids.length && (!intent || batch.kind === intent.kind && ids.length === intentIds(intent).length && intentIds(intent).every(id => ids.includes(id)));
 }

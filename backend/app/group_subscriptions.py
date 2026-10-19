@@ -132,6 +132,7 @@ def batch_view(db, batch):
                 "state": op.state,
                 "error": op.error,
                 "phase": op.phase,
+                "stop_requested": bool(json.loads(op.payload).get("batch_stop_requested")),
             }
         )
     states = Counter(i["state"] for i in items)
@@ -142,8 +143,11 @@ def batch_view(db, batch):
         "total": len(items),
         "states": {
             s: states[s]
-            for s in ("queued", "running", "completed", "failed", "needs_review")
+            for s in ("queued", "running", "completed", "failed", "needs_review", "cancelled")
         },
+        "can_stop": batch.kind in ("user_cancel", "group_cancel") and any(
+            i["state"] in ("queued", "running", "needs_review") and not i["stop_requested"] for i in items),
+        "stop_requested": any(i["stop_requested"] for i in items),
         "items": items,
     }
 
@@ -583,6 +587,57 @@ def detail(
     batch = db.get(LifecycleBatch, batch_id)
     if not batch or (actor.role != "admin" and batch.actor_id != actor.id):
         raise HTTPException(404, "批次不存在")
+    return batch_view(db, batch)
+
+
+@router.post("/lifecycle-batches/{batch_id}/stop")
+def stop_cancellations(batch_id: str, request: Request,
+                       actor: User = Depends(get_user), db: Session = Depends(get_db)):
+    batch = db.get(LifecycleBatch, batch_id)
+    if not batch or (actor.role != "admin" and batch.actor_id != actor.id):
+        raise HTTPException(404, "批次不存在")
+    if batch.kind not in ("user_cancel", "group_cancel"):
+        raise HTTPException(409, "此入口仅用于关闭批量取消订阅")
+    from .automatic_retries import settle_retry
+    changed = 0
+    for item in db.scalars(select(LifecycleBatchItem).where(LifecycleBatchItem.batch_id == batch.id)):
+        native = item.principal_type == "GROUP"
+        op = db.get(NativeGroupOperation if native else RecordOperation, item.operation_id)
+        if op.state not in ("queued", "running", "needs_review"):
+            continue
+        payload = json.loads(op.payload)
+        if payload.get("batch_stop_requested"):
+            continue
+        payload["batch_stop_requested"] = True
+        op.payload = json.dumps(payload)
+        changed += 1
+        # This transaction serializes with the worker's pre-wire checkpoint.
+        # A pending write is never reported cancelled: its outcome still needs
+        # read-only reconciliation, with no automatic resubmission.
+        if op.phase != "ready" or payload.get("worker_config_hash") or (native and op.write_requested_at):
+            continue
+        op.state, op.phase = "cancelled", "done"
+        op.error, op.finished_at = "批量取消订阅已关闭，本项未发送到 AWS", now()
+        op.lease_token = op.lease_until = None
+        if native:
+            settle_retry(db, "native", op.id)
+            group = db.get(ManagedGroup, op.group_id)
+            if group and group.active_job_id == op.id:
+                group.active_job_id, group.updated_at = None, now()
+            for member in json.loads(op.member_snapshot):
+                record = db.get(Subscription, member["id"])
+                if record and record.active_operation_id == op.id:
+                    record.active_operation_id, record.updated_at = None, now()
+        else:
+            record = db.get(Subscription, op.record_id)
+            if record.active_operation_id == op.id:
+                record.active_operation_id = None
+            group = db.get(ManagedGroup, payload["native_group_id"]) if payload.get("native_group_id") else None
+            if group and group.active_job_id == op.id:
+                group.active_job_id = None
+    if changed:
+        audit(db, actor, "stop_subscription_cancellations", f"关闭批量取消订阅 {batch.id}；停止后续请求，保留已发送结果", request=request)
+    db.commit()
     return batch_view(db, batch)
 
 

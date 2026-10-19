@@ -298,6 +298,7 @@ export interface RetryProgress {
   retry_exhausted?: boolean;
 }
 export interface RecordItem extends RetryProgress {
+  account_deleted_at?: string | null;
   internal_id?: string;
   account_number?: string;
   provisioning_batch_number?: string;
@@ -660,6 +661,8 @@ export interface GroupPolicy {
   revision: number;
 }
 export interface GroupItem {
+  account_name?: string;
+  account_deleted_at?: string | null;
   id: string;
   owner_id: number;
   aws_account_id: number;
@@ -685,12 +688,14 @@ export interface NativeGrant {
   source: "GROUP"; future_members_inherit: true;
 }
 export type LifecycleKind = "group_subscribe" | "group_cancel" | "user_cancel";
-export type LifecycleState = "queued" | "running" | "completed" | "failed" | "needs_review";
+export type LifecycleState = "queued" | "running" | "completed" | "failed" | "needs_review" | "cancelled";
 export interface LifecycleItem {
   id: string; name: string; principal_type: "GROUP" | "USER"; operation_id: string;
   state: LifecycleState; phase: string; error: string | null;
 }
 export interface LifecycleBatch {
+  can_stop?: boolean;
+  stop_requested?: boolean;
   id: string; kind: LifecycleKind; created_at: string; total: number;
   states: Record<LifecycleState, number>; items: LifecycleItem[];
 }

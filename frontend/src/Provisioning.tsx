@@ -189,6 +189,7 @@ export function AccountProgress({ row, batch, user, disabled, run, download, onA
   const sync = synchronizationProgress(row);
   return <section className="panel provisioning-account-progress" aria-label={`批次 ${row.batch_number}`}>
     <div className="section-heading"><div><h3 className="mono">{row.batch_number} · {row.account_name}</h3><p>{row.plan_name} · {sync ? '等待同步' : provisioningPhases[row.phase] || row.phase}</p></div><State state={sync ? '等待同步' : row.state} /></div>
+    {row.account_deleted_at && <p className="info-note">此 AWS 账号已被删除。已有订阅、SSO 用户、分组和批次历史保留。</p>}
     {sync ? <div className="provisioning-sync-progress" role="status">
       <p><strong>等待同步</strong><span>已同步 {sync.confirmed} / {sync.total} 人</span></p>
       <progress aria-label={`${row.batch_number} 同步进度`} value={sync.confirmed} max={sync.total} />

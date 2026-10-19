@@ -10,7 +10,7 @@ import time
 import unicodedata
 import zipfile
 from collections import OrderedDict
-from concurrent.futures import Future
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Literal
@@ -44,7 +44,7 @@ ACCOUNT_FIELDS = (
 class ReportInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
     view: Literal["users", "groups", "subscriptions"]
-    account_ids: list[int] = Field(min_length=1, max_length=50)
+    account_ids: list[int] = Field(min_length=1, max_length=100)
     q: str = Field(default="", max_length=254)
     row_ids: list[str] | None = Field(default=None, min_length=1, max_length=100_000)
 
@@ -184,6 +184,15 @@ def activation_date(value):
 
 def account_rows(account, scope, view):
     gateway = aws.AwsGateway(account)
+    try:
+        return _account_rows(gateway, account, scope, view)
+    finally:
+        close = getattr(gateway, "close", None)
+        if close:
+            close()
+
+
+def _account_rows(gateway, account, scope, view):
     is_group = view == "groups"
     allowed = None if scope.role == "admin" else (scope.groups if is_group else scope.users)[account.id]
     raw = gateway.report_subscriptions() if view == "subscriptions" else gateway.report_claims()
@@ -240,7 +249,9 @@ def account_rows(account, scope, view):
                 source = {"INDIVIDUAL": "Individual", "GROUP": "Group",
                           "INDIVIDUAL_AND_GROUP": "Individual + Group"}.get(source, source)
                 values = [name, email, status, plan, source, activation_date(raw_row.get("activationDate"))]
-        row_id = f"{account.id}-{digest((view, remote_id, raw_row))}"
+        # Selection identifies a principal, not its mutable plan/status. A live
+        # AWS update between preview and download must not invalidate that row.
+        row_id = f"{account.id}-{digest((view, remote_id))}"
         if row_id in seen:
             raise aws.AwsFailure("AWS 报表出现重复行，请重新查询")
         seen.add(row_id)
@@ -262,7 +273,18 @@ def remote_failure(exc, billing=False):
 def collect(db, actor, body):
     scope = begin_scope(db, actor, body.account_ids)
     try:
-        rows = [r for account in scope.accounts for r in account_rows(account, scope, body.view)]
+        # Only immutable account snapshots enter threads. Never share the request
+        # DB session; final disclosure still revalidates every scoped permission.
+        from types import SimpleNamespace
+        accounts = [SimpleNamespace(**{key: getattr(a, key) for key in ACCOUNT_FIELDS}) for a in scope.accounts]
+        def read(account):
+            try:
+                return account_rows(account, scope, body.view)
+            except (aws.AwsFailure, ClientError, BotoCoreError) as exc:
+                failure = remote_failure(exc)
+                raise HTTPException(failure.status_code, f"AWS 账号 #{account.id}：{failure.detail}", headers=failure.headers) from None
+        with ThreadPoolExecutor(max_workers=min(4, len(accounts)), thread_name_prefix="aws-report") as pool:
+            rows = [row for result in pool.map(read, accounts) for row in result]
     except (aws.AwsFailure, ClientError, BotoCoreError) as exc:
         raise remote_failure(exc) from None
     q = body.q.strip().casefold()

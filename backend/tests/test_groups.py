@@ -747,14 +747,13 @@ def test_group_policy_audit_and_job_privacy(alice, bob, admin):
     )
 
 
-def test_groups_block_resource_reassignment_deletion_and_pending_user_changes(
+def test_groups_block_reassignment_but_account_removal_preserves_group(
     alice, admin, monkeypatch
 ):
     from test_resources import aws_body, remove
 
     monkeypatch.setattr("app.main.aws.AwsGateway", GroupGateway)
     group = create_group(alice).json()
-    assert remove(admin, "aws", "测试 AWS").status_code == 409
     assert (
         admin.put(
             "/api/admin/aws/1", json=aws_body(admin, identity_store_id="d-9876543210")
@@ -766,12 +765,11 @@ def test_groups_block_resource_reassignment_deletion_and_pending_user_changes(
     assert admin.delete("/api/admin/users/2").status_code == 409
     assert admin.patch("/api/admin/users/2", json={"active": True}).status_code == 200
     assert run_group()
-    assert remove(admin, "aws", "测试 AWS").status_code == 409
-    assert (
-        operation(admin, group["id"], "delete", expected_revision=1).status_code == 202
-    )
-    assert run_group()
+    remote_id = admin.get(f"/api/groups/{group['id']}").json()["remote_id"]
     assert remove(admin, "aws", "测试 AWS").status_code == 200
+    retained = admin.get(f"/api/groups/{group['id']}").json()
+    assert retained["account_deleted_at"] and not retained["deleted_at"]
+    assert retained["remote_id"] == remote_id and remote_id in GroupGateway.groups
 
 
 def test_single_creation_and_sso_filter_export_group_scope(alice, bob):

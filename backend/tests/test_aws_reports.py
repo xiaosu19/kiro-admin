@@ -240,6 +240,32 @@ def test_any_account_failure_fails_entire_export(admin, report_remote, monkeypat
     response = download(admin, account_ids=[1, 2])
     assert response.status_code == 502, response.text
     assert "Content-Disposition" not in response.headers
+    assert "账号 #2" in response.json()['detail']
+
+
+def test_download_selection_survives_live_plan_update(admin, report_remote, monkeypatch):
+    preview = query(admin, 'users').json()
+    chosen = next(row['id'] for row in preview['rows'] if row['values'][0].startswith('Current'))
+    claims = [dict(row) for row in report_remote.claims]
+    claims[0]['newType'] = {'amazonQ': 'KIRO_ENTERPRISE_PRO_PLUS'}
+    monkeypatch.setattr(report_remote, 'claims', claims)
+    response = download(admin, 'users', row_ids=[chosen])
+    assert response.status_code == 200, response.text
+    rows = list(csv.reader(io.StringIO(response.content.decode('utf-8-sig'))))
+    assert len(rows) == 2 and rows[1][-1] == 'Kiro Pro+'
+
+
+def test_report_reads_accounts_concurrently_without_sharing_database_session(admin, report_remote, monkeypatch):
+    import threading
+    second_account()
+    rendezvous = threading.Barrier(2, timeout=3)
+    original = report_remote.report_subscriptions
+    def synchronized(self):
+        rendezvous.wait()
+        return original(self)
+    monkeypatch.setattr(report_remote, 'report_subscriptions', synchronized)
+    response = download(admin, account_ids=[1, 2])
+    assert response.status_code == 200, response.text
 
 
 @pytest.mark.parametrize("name", ["=SUM(1,2)", "+1", "-2", "@SUM(A1)", " \t=cmd", "\x00\x1f=cmd", "\u200b=cmd", "\r\n@cmd"])

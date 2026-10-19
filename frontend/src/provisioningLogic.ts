@@ -36,6 +36,7 @@ export interface AccountPreview {
 export interface PlanTotal { plan_id: number; plan_name: string; needed_count: number; available_count: number | null; reference_monthly_usd: number }
 export interface ProvisioningPreview { preview_fingerprint: string; accounts: AccountPreview[]; totals: PlanTotal[]; number_is_estimate: boolean }
 export interface ProvisioningAccount extends AccountPreview, RetryProgress {
+  account_deleted_at?: string | null;
   id: string; batch_number: string; state: string; phase: string; error: string | null; allowed_actions: string[];
   group_job_state?: string | null;
   effective_policy: StopPolicy | null; effective_stop_at: string | null; activated_at: string | null;

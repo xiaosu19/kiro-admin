@@ -193,8 +193,8 @@ export function Groups({
   const deletion = useCascadeAdmission(user.id, scope);
   const [deleteOpen, setDeleteOpen] = useState(false);
   useEffect(() => { selectionScope.current = scope; setSelected([]); setNativeAction(null); setDeleteOpen(false); }, [scope]);
-  const filtered = filterGroups(groups.data || [], ownerFilter, stateFilter).filter(group => access.canAccess(group.id) && (user.role === "admin" || accounts.data?.some(account => account.id === group.aws_account_id && account.active && !account.deleted_at)));
-  const observations = useGroupObservations(user.id, scope, groupId ? [] : filtered, access);
+  const filtered = filterGroups(groups.data || [], ownerFilter, stateFilter).filter(group => access.canAccess(group.id) && (user.role === "admin" || !!group.account_deleted_at || accounts.data?.some(account => account.id === group.aws_account_id && account.active && !account.deleted_at)));
+  const observations = useGroupObservations(user.id, scope, groupId ? [] : filtered.filter(group => !group.account_deleted_at), access);
   const selectedIds = selectionScope.current === scope ? currentGroupSelection(selected, filtered) : [];
   const selectedGroups = selectedIds.map(id => filtered.find(group => group.id === id)!);
   function accepted(batch: LifecycleBatch) { observations.invalidate(batch.items.map(item => item.id)); setRefreshVersion(value => value + 1); setLatestBatch(batch); setNativeAction(null); setSelected([]); void groups.refresh(); notify("订阅请求已受理，可查看逐项进度"); }
@@ -449,7 +449,7 @@ export function GroupDirectoryTable({ groups, isAdmin, ownerName, accountName, s
                 <tbody>
                   {groups.map((g) => (
                     <tr key={g.id} className={selected.includes(g.id) ? "selected-record" : undefined}>
-                      {onSelection && <td><input type="checkbox" aria-label={`选择分组 ${g.name}`} checked={selected.includes(g.id)} disabled={disabled || !!g.deleted_at || selected.length >= 100 && !selected.includes(g.id)} onChange={event => onSelection(event.target.checked ? [...selected, g.id] : selected.filter(id => id !== g.id))} /></td>}
+                      {onSelection && <td><input type="checkbox" aria-label={`选择分组 ${g.name}`} checked={selected.includes(g.id)} disabled={disabled || !!g.deleted_at || !!g.account_deleted_at || selected.length >= 100 && !selected.includes(g.id)} onChange={event => onSelection(event.target.checked ? [...selected, g.id] : selected.filter(id => id !== g.id))} /></td>}
                       <td>
                         <NavLink
                           className="group-name"
@@ -464,7 +464,8 @@ export function GroupDirectoryTable({ groups, isAdmin, ownerName, accountName, s
                         {g.native_subscription && <small>本地订阅记录：{g.native_subscription.plan_name} · GROUP · {nativeGrantStates[g.native_subscription.state]}</small>}
                       </td>
                       <td>
-                        {accountName(g.aws_account_id)}
+                        {g.account_name || accountName(g.aws_account_id)}
+                        {g.account_deleted_at && <small className="error-text">此 AWS 账号已被删除，分组与订阅保留</small>}
                         {isAdmin && (
                           <small>{ownerName(g.owner_id)}</small>
                         )}
@@ -708,9 +709,9 @@ function GroupDetails({
 }) {
   const permitted = access.canAccess(groupId), denied = () => access.deny(groupId);
   const detail = useRemote<GroupDetail>(permitted ? `/groups/${groupId}` : null, 3000, user.id, scope, denied);
-  const accessible = permitted && (user.role === "admin" || !!detail.data && accountIds.includes(detail.data.aws_account_id));
+  const accessible = permitted && (user.role === "admin" || !!detail.data && (!!detail.data.account_deleted_at || accountIds.includes(detail.data.aws_account_id)));
   useEffect(() => { if (detail.data && accountsLoaded && !accessible) access.deny(groupId); }, [detail.data, accountsLoaded, accessible, access.deny, groupId]);
-  const observations = useGroupObservations(user.id, scope, detail.data && accessible && !detail.forbidden ? [detail.data] : [], access);
+  const observations = useGroupObservations(user.id, scope, detail.data && !detail.data.account_deleted_at && accessible && !detail.forbidden ? [detail.data] : [], access);
   const [params, setParams] = useSearchParams();
   const [passwordOpen, setPasswordOpen] = useState(params.has("password_batch"));
   useEffect(() => { if (params.has("password_batch")) setPasswordOpen(true); }, [params]);
@@ -757,10 +758,11 @@ function GroupDetails({
     group.state === "ready" &&
     !group.active_job_id &&
     !group.deleted_at &&
+    !group.account_deleted_at &&
     !hasPending && accessible;
   const failedJob = jobs.data?.find((j) => j.id === group.active_job_id);
   const recoverFailed =
-    group.state === "failed" &&
+    group.state === "failed" && !group.account_deleted_at &&
     failedJob?.state === "failed" &&
     failedJob.phase === "ready" &&
     !failedJob.record_id &&
@@ -771,9 +773,9 @@ function GroupDetails({
     ["create", "rename"].includes(failedJob.kind);
   const discardCancelledCreate =
     group.state === "failed" && !group.remote_id && !group.active_job_id &&
-    !group.deleted_at && !hasPending &&
+    !group.deleted_at && !group.account_deleted_at && !hasPending &&
     !!jobs.data?.some(j => j.kind === "create" && j.state === "cancelled" && j.phase === "ready" && !j.record_id);
-  const canCascadeDelete = ready || (accessible && !hasPending && !group.deleted_at && group.state === 'failed' &&
+  const canCascadeDelete = ready || (accessible && !hasPending && !group.deleted_at && !group.account_deleted_at && group.state === 'failed' &&
     (!group.active_job_id || failedJob && ['failed', 'cancelled'].includes(failedJob.state) && failedJob.phase === 'ready' && !failedJob.record_id));
   const canEmptyDelete = !group.members.some(
     (r) =>
@@ -846,6 +848,7 @@ function GroupDetails({
             <GroupBadge state={group.state} />
           </p>
           <p className="muted">本地名称：{group.name}</p>
+          {group.account_deleted_at && <p className="info-note">此 AWS 账号已被删除。现有订阅、SSO 用户与分组保留；恢复账号配置后可继续管理。</p>}
         </div>
         <div className="proxy-buttons">
           <button

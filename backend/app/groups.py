@@ -178,6 +178,8 @@ def group_view(group, db=None):
     }
     if db is not None:
         from .group_subscription_state import group_projection
+        result["account_name"] = db.get(AwsAccount, group.aws_account_id).name
+        result["account_deleted_at"] = db.get(AwsAccount, group.aws_account_id).deleted_at
         result["native_subscription"] = group_projection(db, group.id)
         result["supports_scheduled_cancellation"] = db.get(AwsAccount, group.aws_account_id).control_plane == "kiro"
     result["policy"] = {
@@ -388,11 +390,12 @@ def list_groups(q: str = "", member_q: str = "", aws_account_id: int | None = No
             Subscription.aws_account_id == ManagedGroup.aws_account_id,
             Subscription.username.icontains(member_q, autoescape=True),
         ).exists())
-    group_rows = list(db.execute(query.add_columns(AwsAccount.control_plane).join(
+    group_rows = list(db.execute(query.add_columns(AwsAccount.control_plane, AwsAccount.name, AwsAccount.deleted_at).join(
         AwsAccount, AwsAccount.id == ManagedGroup.aws_account_id
     ).order_by(ManagedGroup.created_at.desc())))
     groups = [row[0] for row in group_rows]
     planes = {row[0].id: row[1] for row in group_rows}
+    account_meta = {row[0].id: {"account_name": row[2], "account_deleted_at": row[3]} for row in group_rows}
     if not groups:
         return []
     members, schedules = defaultdict(list), {}
@@ -437,7 +440,7 @@ def list_groups(q: str = "", member_q: str = "", aws_account_id: int | None = No
     ).order_by(NativeGroupGrant.created_at.desc())):
         native.setdefault(grant.group_id, grant_view(grant))
     return [
-        group_view(group) | {"native_subscription": native.get(group.id), "supports_scheduled_cancellation": planes[group.id] == "kiro", "counts": member_counts(db, group, members[group.id], schedules)}
+        group_view(group) | account_meta[group.id] | {"native_subscription": native.get(group.id), "supports_scheduled_cancellation": planes[group.id] == "kiro", "counts": member_counts(db, group, members[group.id], schedules)}
         for group in groups
     ]
 

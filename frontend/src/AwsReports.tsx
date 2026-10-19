@@ -121,7 +121,7 @@ export function AwsReports({ user, notify }: { user: User; notify: (message: str
   const visibleAccounts = accounts.filter(account => matchesSelection(accountQuery, account.account_number, account.name, account.id, account.aws_account_id, account.region));
   const accountIds = selection.key === actorKey ? selection.ids.filter(id => accounts.some(a => a.id === id)) : [];
   const report = useAwsReport(user, view, accountIds, q);
-  const setIds = (ids: number[]) => setSelection({ key: actorKey, ids });
+  const setIds = (ids: number[]) => setSelection({ key: actorKey, ids: ids.slice(0, 100) });
   return <>
     <div className="page-heading"><div><h1>AWS 报表</h1><p>读取当前 AWS 身份目录与 Kiro 订阅，按控制台列顺序下载 CSV。</p></div></div>
     <section className="panel report-controls">
@@ -131,7 +131,7 @@ export function AwsReports({ user, notify }: { user: User; notify: (message: str
           {tab === "users" ? "Users" : tab === "groups" ? "Groups" : "Subscriptions"}
         </button>)}
       </div>
-      <fieldset className="report-accounts"><legend>AWS 账号（可多选）</legend>
+      <fieldset className="report-accounts"><legend>AWS 账号（可多选，每次最多 100 个）</legend>
         <input className="selection-collection-search" type="search" aria-label="搜索报表 AWS 账号" placeholder="搜索账号名称、ID 或区域" value={accountQuery} onChange={event => setAccountQuery(event.target.value)} />
         <label><input type="checkbox" aria-label="选择全部 AWS 账号（当前搜索结果）" checked={visibleAccounts.length > 0 && visibleAccounts.every(account => accountIds.includes(account.id))}
           disabled={!visibleAccounts.length} onChange={e => setIds(toggleVisibleSelection(accountIds, visibleAccounts.map(a => a.id), e.target.checked))} />选择全部 AWS 账号（当前搜索结果）</label>

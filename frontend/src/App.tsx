@@ -2073,6 +2073,7 @@ function Records({
                     <td>
                       <RecordPlanLabel record={r} directory={directory} />
                       <small>{r.account_name}</small>
+                      {r.account_deleted_at && <small className="error-text">此 AWS 账号已被删除，SSO 与订阅保留</small>}
                     </td>
                     {user.role === "admin" && <td>{r.owner_name}</td>}
                     <td>
@@ -2392,7 +2393,7 @@ function RecordManager({
         </div>}
         <div>
           <dt>AWS 账号</dt>
-          <dd>{r.account_name}</dd>
+          <dd>{r.account_name}{r.account_deleted_at && <p className="info-note">此 AWS 账号已被删除。现有订阅、SSO 用户与分组保留；恢复账号配置后可继续管理。</p>}</dd>
         </div>
         <div>
           <dt>创建者</dt>
@@ -3447,7 +3448,7 @@ function ResourceRemoval({
         <p>将「{resource.name}」移到已删除列表，可在列表中恢复。</p>
         <p className="info-note">
           {kind === "aws"
-            ? "删除的是本控制台中的账号配置，会解除子用户绑定并停止使用此配置。AWS 中的 SSO 用户和 Kiro 订阅保持原状，费用继续按实际订阅结算。恢复并启用后可继续管理。"
+            ? "仅删除本控制台的 AWS 账号配置并解除子用户绑定，不要求先取消订阅。AWS 中的订阅、SSO 用户和分组均保留，相关记录会标注账号已被删除。未发送的操作将停止；已发出的请求仍以 AWS 实际结果为准。恢复、启用并重新绑定后可继续管理。"
             : "删除后停止使用此套餐开通新订阅。已开通的 AWS 订阅保持原状，原套餐、订阅时间、次数和重置历史继续保留。"}
         </p>
         <p className="muted">
@@ -3455,7 +3456,7 @@ function ResourceRemoval({
           {kind === "aws"
             ? `，现存 SSO ${resource.usage?.sso_active || 0} 名`
             : ""}
-          。存在处理中或待核对任务时需先处理完成。
+          {kind === "aws" ? "。现有订阅仍按 AWS 实际使用结算。" : "。存在处理中或待核对任务时需先处理完成。"}
         </p>
         <Field label={`请输入完整名称：${resource.name}`}>
           <input

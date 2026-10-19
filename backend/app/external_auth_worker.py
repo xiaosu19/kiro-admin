@@ -202,7 +202,10 @@ def finish(item_id, token, progress):
             item.state, item.error_code, item.error = 'cancelled', 'revoked', '批次已取消或登录权限已失效'
             clear(item)
         else:
-            item.workflow_encrypted, item.revision, item.stage = progress.sealed_state, progress.revision, progress.stage
+            from .auth_retry import automatic_challenge_reason, record_captcha_outcome
+            item.workflow_encrypted = record_captcha_outcome(
+                db, db.get(User, batch.actor_id), "external", item_id, progress.sealed_state)
+            item.revision, item.stage = progress.revision, progress.stage
             item.answer_encrypted = None
             item.state = {'ready': 'queued', 'polling': 'polling', 'challenge': 'challenge', 'done': 'completed'}[progress.status]
             item.error_code = item.error = None
@@ -217,6 +220,17 @@ def finish(item_id, token, progress):
                     item.error_code, item.error = captcha_failure(automatic)
             item.next_poll_at = (datetime.fromtimestamp(progress.next_poll_at, timezone.utc).replace(tzinfo=None)
                                  if progress.next_poll_at is not None else None)
+            reason = automatic_challenge_reason(item.workflow_encrypted) if item.state == 'challenge' else None
+            credential = decrypt(item.credential_encrypted) if item.credential_encrypted else {}
+            if (reason and item.input_encrypted and credential.get('status') not in ('unknown', 'candidate')
+                    and item.retry_count < MAX_AUTOMATIC_RETRIES):
+                item.retry_count += 1
+                if credential.get('current'):
+                    item.input_encrypted = encrypt({'password': credential['current']})
+                item.workflow_encrypted = item.answer_encrypted = None
+                item.state, item.stage = 'polling', 'captcha_retry_wait'
+                item.next_poll_at = now() + timedelta(seconds=RETRY_DELAYS[item.retry_count - 1])
+                item.error_code, item.error = reason, f'验证码处理未通过，等待第 {item.retry_count}/5 次自动重试'
         item.lease_token = item.lease_until = None
         if item.state not in ACTIVE:
             item.finished_at = now()

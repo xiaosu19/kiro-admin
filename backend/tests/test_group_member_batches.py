@@ -788,7 +788,7 @@ def test_live_batch_fences_user_deletion_role_change_and_account_delete(alice, a
     assert admin.patch("/api/admin/users/2", json={"role": "admin"}).status_code == 409
     assert admin.patch("/api/admin/users/2", json={"active": False}).status_code == 200
     assert admin.delete("/api/admin/users/2").status_code == 409
-    assert admin.request("DELETE", "/api/admin/aws/1", json={"confirm_name": "测试 AWS"}).status_code == 409
+    assert admin.request("DELETE", "/api/admin/aws/1", json={"confirm_name": "测试 AWS"}).status_code == 200
     assert admin.post(route(batch, "stop")).status_code == 200
 
 

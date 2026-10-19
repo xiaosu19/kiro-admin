@@ -490,6 +490,7 @@ def batch_view(db, batch, detail=True, actor=None):
     for child in children:
         snapshot = json.loads(child.snapshot)
         row = preview_row(snapshot, child.batch_number)
+        row["account_deleted_at"] = db.get(AwsAccount, child.aws_account_id).deleted_at
         row.pop("next_batch_number")
         row["group"].update(id=child.group_id, name=child.group_name)
         row.update({key: getattr(child, key) for key in (

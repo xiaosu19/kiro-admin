@@ -102,3 +102,24 @@ export function useLifecycleRecheck(actorId: number, scope: string) {
   }
   return { busy, error, submit };
 }
+
+export function useLifecycleStop(actorId: number, scope: string) {
+  const identity = `${actorId}:${scope}`, active = useRef(identity), flight = useRef(false), generation = useRef(0);
+  const [busy, setBusy] = useState(false), [error, setError] = useState("");
+  useEffect(() => {
+    active.current = identity; generation.current += 1; flight.current = false; setBusy(false); setError("");
+    return () => { active.current = ""; generation.current += 1; };
+  }, [identity]);
+  async function stop(batch: LifecycleBatch) {
+    if (active.current !== identity || flight.current || !batch.can_stop) return false;
+    const version = generation.current, current = () => active.current === identity && version === generation.current;
+    flight.current = true; setBusy(true); setError("");
+    try {
+      const result = await api<LifecycleBatch>(`/lifecycle-batches/${encodeURIComponent(batch.id)}/stop`, "POST");
+      if (!validLifecycleBatch(result) || result.id !== batch.id) throw new Error("关闭结果尚未确认，请刷新批次后重试。");
+      return current();
+    } catch (e) { if (current()) setError((e as Error).message); return false; }
+    finally { if (current()) { flight.current = false; setBusy(false); } }
+  }
+  return { busy, error, stop };
+}

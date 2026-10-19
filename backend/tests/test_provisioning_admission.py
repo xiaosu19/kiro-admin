@@ -506,7 +506,6 @@ def test_history_scopes_all_accounts_and_fences_mutations(alice, bob, admin, rea
     assert admin.get("/api/provisioning-batches/" + batch_id).status_code == 200
     assert admin.patch("/api/admin/users/2", json={"role": "admin"}).status_code == 409
     assert admin.put("/api/admin/users/2/bindings", json={"account_ids": []}).status_code == 409
-    assert admin.request("DELETE", "/api/admin/aws/1", json={"confirm_name": "测试 AWS"}).status_code == 409
     assert alice.post("/api/groups/target/jobs", json={"kind": "delete", "expected_revision": 1, "request_key": "delete-target-0001"}).status_code == 409
     assert admin.patch("/api/admin/users/2", json={"active": False}).status_code == 200
     assert admin.delete("/api/admin/users/2").status_code == 409
@@ -517,6 +516,9 @@ def test_history_scopes_all_accounts_and_fences_mutations(alice, bob, admin, rea
         db.commit()
     assert alice.get("/api/provisioning-batches/" + batch_id).status_code == 403
     assert alice.get("/api/provisioning-batches").json()["total"] == 0
+    assert admin.request("DELETE", "/api/admin/aws/1", json={"confirm_name": "测试 AWS"}).status_code == 200
+    retained = admin.get("/api/provisioning-batches/" + batch_id).json()
+    assert retained["accounts"][0]["account_deleted_at"]
 
 
 def test_number_only_edit_remains_available_with_disabled_proxy(admin, ready):

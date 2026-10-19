@@ -253,14 +253,8 @@ def test_saved_intent_survives_disabled_creator_and_unbinding(alice, admin, reco
     assert get(admin, record)["stop_schedule"]["state"] == "completed"
 
 
-def test_inactive_aws_blocks_and_resumes_and_deletion_guard(alice, admin, record):
+def test_inactive_aws_blocks_and_resumes(alice, admin, record):
     set_schedule(alice, record)
-    assert (
-        admin.request(
-            "DELETE", "/api/admin/aws/1", json={"confirm_name": "测试 AWS"}
-        ).status_code
-        == 409
-    )
     due(record)
     with SessionLocal() as db:
         db.get(AwsAccount, 1).active = False
@@ -273,6 +267,16 @@ def test_inactive_aws_blocks_and_resumes_and_deletion_guard(alice, admin, record
         db.get(StopSchedule, record["id"]).next_check_at = now() - timedelta(seconds=1)
         db.commit()
     assert enqueue_due() == 1 and run_operation(LifecycleGateway)
+
+
+def test_deleted_aws_preserves_subscription_and_blocks_scheduled_cancel(alice, admin, record):
+    set_schedule(alice, record)
+    due(record)
+    assert admin.request("DELETE", "/api/admin/aws/1", json={"confirm_name": "测试 AWS"}).status_code == 200
+    assert enqueue_due() == 0
+    retained = get(admin, record)
+    assert retained["account_deleted_at"] and not retained["sso_deleted_at"]
+    assert retained["stop_schedule"]["state"] == "blocked"
 
 
 def test_pending_manual_operation_defers_and_cancel_completes_schedule(alice, record):
