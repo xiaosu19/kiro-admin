@@ -79,6 +79,10 @@ writeFileSync(join(output, "GroupDetails-test.js"), compile("Groups.tsx",
   readFileSync(new URL("../src/Groups.tsx", import.meta.url), "utf8")
     .replace("function GroupDetails(", "export function GroupDetails(")
     .replace('from "react-router-dom"', 'from "./router-stub"')));
+writeFileSync(join(output, "provisioning-router-stub.js"), 'export const NavLink = "a"; export function useSearchParams() { return [new URLSearchParams("batch_id=parent"), () => {}]; }');
+writeFileSync(join(output, "ProvisioningPage-test.js"), compile("Provisioning.tsx",
+  readFileSync(new URL("../src/Provisioning.tsx", import.meta.url), "utf8")
+    .replace('from "react-router-dom"', 'from "./provisioning-router-stub"')));
 writeFileSync(join(output, "RecordManager-test.js"), compile("App.tsx",
   readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8")
     .replace("function RecordManager(", "export function RecordManager(")

@@ -319,3 +319,21 @@ test('filtered report download discards old filter and unmounted completions', a
   host.unmount(); finish(response({ detail: 'unmounted' }, 500));
   assert.equal(await second, null); assert.equal(host.updatesAfterUnmount, 0);
 });
+
+test('initial account load cannot replace an already clickable batch download', async t => {
+  const { Provisioning } = await loadSource('ProvisioningPage-test');
+  let finishAccounts;
+  environment(t, url => {
+    if (url === '/api/accounts') return new Promise(resolve => { finishAccounts = resolve; });
+    return Promise.resolve(response(url.includes('provisioning-batches?') ? { items: [], total: 0 } : []));
+  });
+  const host = mountHook(Provisioning, { user: { id: 2, role: 'admin', active: true }, notify() {} });
+  await settle(); host.render();
+  assert.equal(find(host.current, node => node.type?.name === 'ProvisioningBatchDetail'), null);
+  assert.ok(find(host.current, node => node.props?.role === 'status'));
+  finishAccounts(response([account])); await settle(); host.render();
+  const detail = find(host.current, node => node.type?.name === 'ProvisioningBatchDetail');
+  assert.equal(detail.props.id, 'parent');
+  assert.equal(detail.props.access.canAccess('parent'), true);
+  host.unmount();
+});

@@ -358,7 +358,9 @@ export function Provisioning({ user, notify }: { user: User; notify: (message: s
     </form>
     {preview.data && !admission.pending && <><Preview preview={preview.data} /><button type="button" className="primary" disabled={admission.busy} onClick={submit}>确认开通</button></>}
     {admission.pending && <section className="panel"><h2>继续确认原请求</h2><p>提交结果尚未确认，原账号、数量、规则和请求标识已保存。刷新页面不会自动重新提交。</p><button type="button" className="primary" disabled={admission.busy} onClick={submit}>{admission.busy ? '正在确认…' : '继续确认原请求'}</button></section>}
-    {detailId && <ProvisioningBatchDetail key={`${user.id}:${scope}:${detailId}`} id={detailId} user={user} scope={scope} notify={notify} access={access} />}
+    {detailId && (accounts.data && !accounts.forbidden
+      ? <ProvisioningBatchDetail key={`${user.id}:${scope}:${detailId}`} id={detailId} user={user} scope={scope} notify={notify} access={access} />
+      : <p role="status">正在核对 AWS 账号范围，随后显示批次进度与下载入口…</p>)}
     <section className="panel batch-history"><div className="section-heading"><h2>批次历史</h2><button type="button" className="secondary" disabled={reportDownload.busy || !!history.error || !history.data?.total} onClick={report}>下载筛选批次报告</button></div>
       <div className="provisioning-history-filters"><label className="field"><span>AWS 账号</span><SearchableSelect aria-label="筛选 AWS 账号" value={filterAccount} onChange={e => { setFilterAccount(e.target.value); setPage(1); }}><option value="">全部 AWS 账号</option>{accounts.data?.map(a => <option key={a.id} value={a.id}>{accountLabel(a)}</option>)}</SearchableSelect></label>
         <label className="field"><span>模糊搜索</span><input type="search" aria-label="搜索批次、内部 ID 或用户名" placeholder="批次、内部 ID 或用户名" value={query} onChange={e => { setQuery(e.target.value); setPage(1); }} /></label>
